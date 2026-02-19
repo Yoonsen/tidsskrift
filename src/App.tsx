@@ -287,6 +287,13 @@ function App() {
     );
   }
 
+  function removeGroupRow(key: string) {
+    setGroupRows((current) => {
+      if (current.length <= 1) return current;
+      return current.filter((row) => row.key !== key);
+    });
+  }
+
   async function runGroupedAggregation() {
     const cleanGroups = groupRows
       .map((row) => ({
@@ -481,6 +488,31 @@ function App() {
     return indices.map((index) => ({ index, year: fullYearRange[index] }));
   }, [fullYearRange]);
 
+  const concSeriesPoints = useMemo(() => {
+    const yearMap = new Map(countsByYear);
+    return fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
+  }, [countsByYear, fullYearRange]);
+
+  const concMaxValue = useMemo(() => {
+    let maxValue = 0;
+    for (const point of concSeriesPoints) {
+      if (point.value > maxValue) maxValue = point.value;
+    }
+    return Math.max(maxValue, 1);
+  }, [concSeriesPoints]);
+
+  const concXAxisTicks = useMemo(() => {
+    if (fullYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
+    const desiredTickCount = 4;
+    const step = Math.max(1, Math.floor((fullYearRange.length - 1) / desiredTickCount));
+    const indices: number[] = [];
+    for (let i = 0; i < fullYearRange.length; i += step) indices.push(i);
+    if (indices[indices.length - 1] !== fullYearRange.length - 1) {
+      indices.push(fullYearRange.length - 1);
+    }
+    return indices.map((index) => ({ index, year: fullYearRange[index] }));
+  }, [fullYearRange]);
+
   return (
     <main className="page">
       <h1>Nylænde - konkordanser</h1>
@@ -565,22 +597,45 @@ function App() {
             {countsByYear.length === 0 ? (
               <p className="subtle">Ingen treff ennå.</p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Ar</th>
-                    <th>Treff</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {countsByYear.map(([year, count]) => (
-                    <tr key={year}>
-                      <td>{year}</td>
-                      <td>{count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <svg viewBox="0 0 960 180" className="chart chart-compact">
+                <line x1="40" y1="140" x2="920" y2="140" stroke="#cbd5e1" />
+                <line x1="40" y1="20" x2="40" y2="140" stroke="#cbd5e1" />
+                {[0, 0.5, 1].map((ratio) => {
+                  const y = 140 - 120 * ratio;
+                  const value = Math.round(concMaxValue * ratio);
+                  return (
+                    <g key={`conc-y-${ratio}`}>
+                      <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
+                      <text x="34" y={y + 4} textAnchor="end" className="axis-text">
+                        {value}
+                      </text>
+                    </g>
+                  );
+                })}
+                {concXAxisTicks.map((tick) => {
+                  const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                  return (
+                    <g key={`conc-x-${tick.year}`}>
+                      <line x1={x} y1="140" x2={x} y2="144" stroke="#94a3b8" />
+                      <text x={x} y="160" textAnchor="middle" className="axis-text">
+                        {tick.year}
+                      </text>
+                    </g>
+                  );
+                })}
+                <polyline
+                  fill="none"
+                  stroke="#1d4ed8"
+                  strokeWidth="2.5"
+                  points={concSeriesPoints
+                    .map((point, index) => {
+                      const x = 40 + (880 * index) / Math.max(concSeriesPoints.length - 1, 1);
+                      const y = 140 - (120 * point.value) / concMaxValue;
+                      return `${x},${y}`;
+                    })
+                    .join(" ")}
+                />
+              </svg>
             )}
           </section>
 
@@ -638,10 +693,19 @@ function App() {
                   placeholder="Varianter, f.eks. Amerika, De forenede stater, U.S.A."
                   rows={2}
                 />
+                <button
+                  type="button"
+                  className="btn-row-delete"
+                  onClick={() => removeGroupRow(row.key)}
+                  disabled={groupRows.length <= 1}
+                  title="Slett rad"
+                >
+                  ✕
+                </button>
               </div>
             ))}
 
-            <div className="button-row">
+            <div className="button-row utility-row">
               <button
                 type="button"
                 onClick={() =>
@@ -651,10 +715,7 @@ function App() {
                   ])
                 }
               >
-                Legg til rad
-              </button>
-              <button type="button" onClick={() => void runGroupedAggregation()} disabled={groupLoading}>
-                {groupLoading ? "Kjører …" : "Kjør aggregert"}
+                + Legg til rad
               </button>
               <button type="button" onClick={handleDownloadGroupTemplate}>
                 Last ned grupper
@@ -664,6 +725,16 @@ function App() {
               </button>
               <button type="button" onClick={handleDownloadAggregatedCsv}>
                 Last ned aggregert CSV
+              </button>
+            </div>
+            <div className="button-row">
+              <button
+                type="button"
+                className="btn-run-agg"
+                onClick={() => void runGroupedAggregation()}
+                disabled={groupLoading}
+              >
+                {groupLoading ? "Kjører …" : "Kjør aggregert"}
               </button>
             </div>
             <input

@@ -105,15 +105,37 @@ button:disabled {
 
 .two-col {
   display: grid;
-  grid-template-columns: 1fr 2fr;
+  grid-template-columns: 1fr 2fr auto;
   gap: 0.65rem;
   margin-bottom: 0.65rem;
+  align-items: start;
 }
 
 .button-row {
   display: flex;
   gap: 0.65rem;
   flex-wrap: wrap;
+}
+
+.utility-row {
+  margin-bottom: 0.55rem;
+}
+
+.btn-run-agg {
+  background: #0f766e;
+}
+
+.btn-row-delete {
+  background: #e2e8f0;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  min-width: 2rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.btn-row-delete:disabled {
+  opacity: 0.5;
 }
 
 .tabs {
@@ -165,6 +187,10 @@ td {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
+}
+
+.chart-compact {
+  max-height: 170px;
 }
 
 .legend {
