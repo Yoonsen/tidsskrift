@@ -29,3 +29,5 @@ BASE_PATH=/nylende/ npm run build
 - Shows concordance hits and simple counts per year
 
 GitHub Actions workflow for build verification is in `.github/workflows/vite-build.yml`.
+
+The workflow now builds and deploys to GitHub Pages on `main`.
