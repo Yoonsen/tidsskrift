@@ -121,6 +121,10 @@ function parseGroupsFromJson(raw: string): Array<{ group: string; variants: stri
   return [];
 }
 
+function renderConcordanceHtml(fragment: string): { __html: string } {
+  return { __html: fragment };
+}
+
 function App() {
   const [corpus, setCorpus] = useState<CorpusEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"conc" | "agg">("conc");
@@ -546,6 +550,10 @@ function App() {
                 placeholder="f.eks. Amerika"
               />
             </label>
+            <p className="subtle">
+              Søketips (FTS5): enkeltord <code>amerika</code>, frase{" "}
+              <code>"de forenede stater"</code>, nærhet <code>NEAR(amerika england, 5)</code>.
+            </p>
             <button onClick={() => void searchConcordance()} disabled={isLoading}>
               {isLoading ? "Søker …" : "Kjør konkordans"}
             </button>
@@ -590,7 +598,7 @@ function App() {
                   : "";
                 return (
                   <article key={`${row.bookId}-${row.pos}-${index}`} className="hit">
-                    <p>{row.frag}</p>
+                    <p dangerouslySetInnerHTML={renderConcordanceHtml(row.frag)} />
                     <p className="meta">
                       {label || `dhlabid ${row.bookId}`}
                       {link ? (
@@ -774,7 +782,8 @@ function App() {
                       const meta = metadataById.get(row.bookId);
                       return (
                         <p key={`${group.group}-${row.bookId}-${row.pos}-${idx}`} className="meta">
-                          {meta?.year ?? "?"}: {row.frag}
+                          {meta?.year ?? "?"}:{" "}
+                          <span dangerouslySetInnerHTML={renderConcordanceHtml(row.frag)} />
                         </p>
                       );
                     })}
