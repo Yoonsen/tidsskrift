@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import corpusCsvUrl from "../Nylænde.csv?url";
 
@@ -38,6 +38,8 @@ type GroupResult = {
 
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
+const FTS_WINDOW = 25;
+const FTS_LIMIT = 1000;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
 const API_BASE = "https://api.nb.no/dhlab";
 
@@ -55,17 +57,76 @@ function normalizeVariants(raw: string): string[] {
     .filter(Boolean);
 }
 
+function serializeGroupsAsText(rows: GroupEditorRow[]): string {
+  return rows
+    .map((row) => ({
+      group: row.group.trim(),
+      variants: normalizeVariants(row.variants)
+    }))
+    .filter((row) => row.group && row.variants.length > 0)
+    .map((row) => `${row.group}: ${row.variants.join(" | ")}`)
+    .join("\n");
+}
+
+function parseGroupsFromText(raw: string): Array<{ group: string; variants: string[] }> {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+
+  return lines
+    .map((line) => {
+      const [groupPart, ...rest] = line.split(":");
+      const group = (groupPart ?? "").trim();
+      const variantsRaw = rest.join(":").trim();
+      const variants = variantsRaw
+        .split(/[|,;]+/g)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return { group, variants };
+    })
+    .filter((row) => row.group.length > 0 && row.variants.length > 0);
+}
+
+function parseGroupsFromJson(raw: string): Array<{ group: string; variants: string[] }> {
+  const parsed = JSON.parse(raw) as unknown;
+
+  if (Array.isArray(parsed)) {
+    return parsed
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+        const group = String(obj.group ?? "").trim();
+        const variants = Array.isArray(obj.variants)
+          ? obj.variants.map((v) => String(v).trim()).filter(Boolean)
+          : [];
+        if (!group || variants.length === 0) return null;
+        return { group, variants };
+      })
+      .filter((row): row is { group: string; variants: string[] } => !!row);
+  }
+
+  if (parsed && typeof parsed === "object") {
+    return Object.entries(parsed as Record<string, unknown>)
+      .map(([group, value]) => {
+        const variants = Array.isArray(value)
+          ? value.map((v) => String(v).trim()).filter(Boolean)
+          : [];
+        if (!group.trim() || variants.length === 0) return null;
+        return { group: group.trim(), variants };
+      })
+      .filter((row): row is { group: string; variants: string[] } => !!row);
+  }
+
+  return [];
+}
+
 function App() {
   const [corpus, setCorpus] = useState<CorpusEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"conc" | "agg">("conc");
   const [query, setQuery] = useState("");
   const [minYear, setMinYear] = useState(DEFAULT_MIN_YEAR);
   const [maxYear, setMaxYear] = useState(DEFAULT_MAX_YEAR);
-  const [before, setBefore] = useState(15);
-  const [after, setAfter] = useState(15);
-  const [perBook, setPerBook] = useState(3);
-  const [docSamples, setDocSamples] = useState(100);
-  const [totalLimit, setTotalLimit] = useState(300);
   const [status, setStatus] = useState("Laster korpus...");
   const [isLoading, setIsLoading] = useState(false);
   const [rows, setRows] = useState<ConcordanceRow[]>([]);
@@ -78,6 +139,7 @@ function App() {
   const [groupResults, setGroupResults] = useState<GroupResult[]>([]);
   const [groupStatus, setGroupStatus] = useState("Ingen aggregert kjoring ennå.");
   const [groupLoading, setGroupLoading] = useState(false);
+  const groupFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     Papa.parse<Record<string, string>>(corpusCsvUrl, {
@@ -147,8 +209,8 @@ function App() {
       query: searchQuery,
       html_formatting: true,
       trigram_index: false,
-      window: Math.max(1, Math.min(25, Math.max(before, after))),
-      limit: Math.max(1, Math.min(1000, Math.floor(totalLimit))),
+      window: FTS_WINDOW,
+      limit: FTS_LIMIT,
       dhlabids
     };
 
@@ -282,6 +344,84 @@ function App() {
     }
   }
 
+  function downloadFile(filename: string, content: string, mimeType: string) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleDownloadGroupTemplate() {
+    const text = serializeGroupsAsText(groupRows);
+    const content = text.length > 0 ? text : "Amerika: Amerika | De forenede stater | U.S.A.";
+    downloadFile("aggregert-grupper.txt", content, "text/plain;charset=utf-8");
+  }
+
+  function handleUploadGroupTemplateClick() {
+    groupFileInputRef.current?.click();
+  }
+
+  async function handleUploadGroupTemplate(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const raw = await file.text();
+      const trimmed = raw.trim();
+      if (!trimmed) throw new Error("Filen er tom.");
+
+      let parsedRows: Array<{ group: string; variants: string[] }> = [];
+      try {
+        parsedRows = parseGroupsFromJson(trimmed);
+      } catch {
+        parsedRows = parseGroupsFromText(trimmed);
+      }
+
+      if (parsedRows.length === 0) {
+        throw new Error("Fant ingen gyldige grupper. Bruk formatet 'Gruppe: variant | variant'.");
+      }
+
+      setGroupRows(
+        parsedRows.map((row) => ({
+          key: crypto.randomUUID(),
+          group: row.group,
+          variants: row.variants.join(", ")
+        }))
+      );
+      setGroupStatus(`Lastet ${parsedRows.length} grupper fra fil.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ukjent feil";
+      setGroupStatus(`Kunne ikke laste grupper: ${message}`);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function handleDownloadAggregatedCsv() {
+    if (groupResults.length === 0) {
+      setGroupStatus("Ingen aggregerte data å laste ned ennå.");
+      return;
+    }
+
+    const lines = ["group,year,count,total"];
+    groupResults.forEach((group) => {
+      if (group.byYear.length === 0) {
+        lines.push(`"${group.group.replace(/"/g, '""')}",,0,${group.total}`);
+        return;
+      }
+      group.byYear.forEach(([year, count]) => {
+        lines.push(`"${group.group.replace(/"/g, '""')}",${year},${count},${group.total}`);
+      });
+    });
+
+    downloadFile("aggregert-data.csv", lines.join("\n"), "text/csv;charset=utf-8");
+  }
+
   const fullYearRange = useMemo(() => {
     const years: number[] = [];
     for (let year = minYear; year <= maxYear; year += 1) {
@@ -313,6 +453,18 @@ function App() {
     return Math.max(maxValue, 1);
   }, [chartSeries]);
 
+  const xAxisTicks = useMemo(() => {
+    if (fullYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
+    const desiredTickCount = 6;
+    const step = Math.max(1, Math.floor((fullYearRange.length - 1) / desiredTickCount));
+    const indices: number[] = [];
+    for (let i = 0; i < fullYearRange.length; i += step) indices.push(i);
+    if (indices[indices.length - 1] !== fullYearRange.length - 1) {
+      indices.push(fullYearRange.length - 1);
+    }
+    return indices.map((index) => ({ index, year: fullYearRange[index] }));
+  }, [fullYearRange]);
+
   return (
     <main className="page">
       <h1>Nylaende - konkordanser</h1>
@@ -341,46 +493,9 @@ function App() {
           </label>
         </div>
         <div className="grid">
-          <label>
-            Before
-            <input
-              type="number"
-              value={before}
-              onChange={(event) => setBefore(Number(event.target.value))}
-            />
-          </label>
-          <label>
-            After
-            <input
-              type="number"
-              value={after}
-              onChange={(event) => setAfter(Number(event.target.value))}
-            />
-          </label>
-          <label>
-            Per bok
-            <input
-              type="number"
-              value={perBook}
-              onChange={(event) => setPerBook(Number(event.target.value))}
-            />
-          </label>
-          <label>
-            Doc samples
-            <input
-              type="number"
-              value={docSamples}
-              onChange={(event) => setDocSamples(Number(event.target.value))}
-            />
-          </label>
-          <label>
-            Total limit
-            <input
-              type="number"
-              value={totalLimit}
-              onChange={(event) => setTotalLimit(Number(event.target.value))}
-            />
-          </label>
+          <div className="subtle">
+            FTS5-parametre: <code>window={FTS_WINDOW}</code>, <code>limit={FTS_LIMIT}</code>
+          </div>
         </div>
         <p className="subtle">Dokumenter i valgt arsomrade: {filteredCorpus.length}</p>
       </section>
@@ -521,7 +636,23 @@ function App() {
               <button type="button" onClick={() => void runGroupedAggregation()} disabled={groupLoading}>
                 {groupLoading ? "Kjorer..." : "Kjor aggregert"}
               </button>
+              <button type="button" onClick={handleDownloadGroupTemplate}>
+                Last ned grupper
+              </button>
+              <button type="button" onClick={handleUploadGroupTemplateClick}>
+                Last opp grupper
+              </button>
+              <button type="button" onClick={handleDownloadAggregatedCsv}>
+                Last ned aggregert CSV
+              </button>
             </div>
+            <input
+              ref={groupFileInputRef}
+              type="file"
+              accept=".txt,.json"
+              style={{ display: "none" }}
+              onChange={handleUploadGroupTemplate}
+            />
             <p className="status">{groupStatus}</p>
           </section>
 
@@ -534,6 +665,29 @@ function App() {
                 <svg viewBox="0 0 960 300" className="chart">
                   <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
                   <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
+                  {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                    const y = 260 - 240 * ratio;
+                    const value = Math.round(maxChartValue * ratio);
+                    return (
+                      <g key={`y-${ratio}`}>
+                        <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
+                        <text x="34" y={y + 4} textAnchor="end" className="axis-text">
+                          {value}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {xAxisTicks.map((tick) => {
+                    const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                    return (
+                      <g key={`x-${tick.year}`}>
+                        <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
+                        <text x={x} y="278" textAnchor="middle" className="axis-text">
+                          {tick.year}
+                        </text>
+                      </g>
+                    );
+                  })}
                   {chartSeries.map((series) => {
                     const polyline = series.points
                       .map((point, index) => {

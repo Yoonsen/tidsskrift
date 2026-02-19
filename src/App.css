@@ -192,6 +192,11 @@ td {
   margin-bottom: 1rem;
 }
 
+.axis-text {
+  fill: #64748b;
+  font-size: 11px;
+}
+
 .results-pane {
   resize: vertical;
   overflow: auto;
