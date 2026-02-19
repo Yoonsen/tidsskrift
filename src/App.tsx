@@ -127,7 +127,7 @@ function App() {
   const [query, setQuery] = useState("");
   const [minYear, setMinYear] = useState(DEFAULT_MIN_YEAR);
   const [maxYear, setMaxYear] = useState(DEFAULT_MAX_YEAR);
-  const [status, setStatus] = useState("Laster korpus...");
+  const [status, setStatus] = useState("Laster korpus …");
   const [isLoading, setIsLoading] = useState(false);
   const [rows, setRows] = useState<ConcordanceRow[]>([]);
   const [groupRows, setGroupRows] = useState<GroupEditorRow[]>([
@@ -137,8 +137,9 @@ function App() {
     { key: crypto.randomUUID(), group: "Sverige", variants: "Sverige" }
   ]);
   const [groupResults, setGroupResults] = useState<GroupResult[]>([]);
-  const [groupStatus, setGroupStatus] = useState("Ingen aggregert kjoring ennå.");
+  const [groupStatus, setGroupStatus] = useState("Ingen aggregert kjøring ennå.");
   const [groupLoading, setGroupLoading] = useState(false);
+  const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
   const groupFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -249,17 +250,17 @@ function App() {
   async function searchConcordance() {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
-      setStatus("Skriv inn sokeord.");
+      setStatus("Skriv inn søkeord.");
       return;
     }
     if (filteredCorpus.length === 0) {
-      setStatus("Ingen dokumenter matcher valgt arsintervall.");
+      setStatus("Ingen dokumenter matcher valgt årsintervall.");
       return;
     }
 
     setIsLoading(true);
     setRows([]);
-    setStatus("Soker i konkordans...");
+    setStatus("Søker i konkordans...");
 
     try {
       const resultRows = await fetchConcordanceRowsForQuery(trimmedQuery, filteredCorpus);
@@ -270,7 +271,7 @@ function App() {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Ukjent feil";
-      setStatus(`Sok feilet: ${message}`);
+      setStatus(`Søk feilet: ${message}`);
     } finally {
       setIsLoading(false);
     }
@@ -295,13 +296,13 @@ function App() {
       return;
     }
     if (filteredCorpus.length === 0) {
-      setGroupStatus("Ingen dokumenter matcher valgt arsintervall.");
+      setGroupStatus("Ingen dokumenter matcher valgt årsintervall.");
       return;
     }
 
     setGroupLoading(true);
     setGroupResults([]);
-    setGroupStatus("Kjorer aggregert konkordanstelling...");
+    setGroupStatus("Kjører aggregert konkordanstelling …");
 
     try {
       const allResults: GroupResult[] = [];
@@ -338,7 +339,7 @@ function App() {
       setGroupStatus(`Ferdig: ${allResults.length} grupper analysert for ${minYear}-${maxYear}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Ukjent feil";
-      setGroupStatus(`Aggregert kjoring feilet: ${message}`);
+      setGroupStatus(`Aggregert kjøring feilet: ${message}`);
     } finally {
       setGroupLoading(false);
     }
@@ -443,15 +444,26 @@ function App() {
     [groupResults, fullYearRange]
   );
 
+  useEffect(() => {
+    setHiddenGroups((current) =>
+      current.filter((groupName) => chartSeries.some((series) => series.group === groupName))
+    );
+  }, [chartSeries]);
+
+  const visibleChartSeries = useMemo(
+    () => chartSeries.filter((series) => !hiddenGroups.includes(series.group)),
+    [chartSeries, hiddenGroups]
+  );
+
   const maxChartValue = useMemo(() => {
     let maxValue = 0;
-    for (const series of chartSeries) {
+    for (const series of visibleChartSeries) {
       for (const point of series.points) {
         if (point.value > maxValue) maxValue = point.value;
       }
     }
     return Math.max(maxValue, 1);
-  }, [chartSeries]);
+  }, [visibleChartSeries]);
 
   const xAxisTicks = useMemo(() => {
     if (fullYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
@@ -467,16 +479,16 @@ function App() {
 
   return (
     <main className="page">
-      <h1>Nylaende - konkordanser</h1>
+      <h1>Nylænde - konkordanser</h1>
       <p className="subtle">
         Kilde: DH-lab concordance + korpus fra <code>Nylænde.csv</code>.
       </p>
 
       <section className="controls">
-        <h2>Korpus og sokeparametre</h2>
+        <h2>Korpus og søkeparametre</h2>
         <div className="year-row">
           <label>
-            Fra ar
+            Fra år
             <input
               type="number"
               value={minYear}
@@ -484,7 +496,7 @@ function App() {
             />
           </label>
           <label>
-            Til ar
+            Til år
             <input
               type="number"
               value={maxYear}
@@ -497,7 +509,7 @@ function App() {
             FTS5-parametre: <code>window={FTS_WINDOW}</code>, <code>limit={FTS_LIMIT}</code>
           </div>
         </div>
-        <p className="subtle">Dokumenter i valgt arsomrade: {filteredCorpus.length}</p>
+        <p className="subtle">Dokumenter i valgt årsområde: {filteredCorpus.length}</p>
       </section>
 
       <section className="tabs">
@@ -522,7 +534,7 @@ function App() {
           <section className="controls">
             <h2>Konkordansvisning</h2>
             <label>
-              Sok
+              Søk
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -535,13 +547,13 @@ function App() {
               />
             </label>
             <button onClick={() => void searchConcordance()} disabled={isLoading}>
-              {isLoading ? "Soker..." : "Kjor konkordans"}
+              {isLoading ? "Søker …" : "Kjør konkordans"}
             </button>
             <p className="status">{status}</p>
           </section>
 
           <section className="counts">
-            <h2>Telling av konkordanser per ar</h2>
+            <h2>Telling av konkordanser per år</h2>
             {countsByYear.length === 0 ? (
               <p className="subtle">Ingen treff ennå.</p>
             ) : (
@@ -586,7 +598,7 @@ function App() {
                           {" "}
                           -{" "}
                           <a href={link} target="_blank" rel="noreferrer">
-                            vis i NB
+                            Vis i NB
                           </a>
                         </>
                       ) : null}
@@ -634,7 +646,7 @@ function App() {
                 Legg til rad
               </button>
               <button type="button" onClick={() => void runGroupedAggregation()} disabled={groupLoading}>
-                {groupLoading ? "Kjorer..." : "Kjor aggregert"}
+                {groupLoading ? "Kjører …" : "Kjør aggregert"}
               </button>
               <button type="button" onClick={handleDownloadGroupTemplate}>
                 Last ned grupper
@@ -688,7 +700,7 @@ function App() {
                       </g>
                     );
                   })}
-                  {chartSeries.map((series) => {
+                  {visibleChartSeries.map((series) => {
                     const polyline = series.points
                       .map((point, index) => {
                         const x = 40 + (880 * index) / Math.max(series.points.length - 1, 1);
@@ -709,9 +721,21 @@ function App() {
                 </svg>
                 <div className="legend">
                   {chartSeries.map((series) => (
-                    <span key={series.group}>
+                    <button
+                      key={series.group}
+                      type="button"
+                      className={hiddenGroups.includes(series.group) ? "legend-toggle off" : "legend-toggle"}
+                      onClick={() =>
+                        setHiddenGroups((current) =>
+                          current.includes(series.group)
+                            ? current.filter((name) => name !== series.group)
+                            : [...current, series.group]
+                        )
+                      }
+                      title="Klikk for å slå kurve av/på"
+                    >
                       <i style={{ backgroundColor: series.color }} /> {series.group}
-                    </span>
+                    </button>
                   ))}
                 </div>
               </>

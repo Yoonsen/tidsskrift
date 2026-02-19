@@ -188,6 +188,23 @@ td {
   display: inline-block;
 }
 
+.legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+
+.legend-toggle.off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
 .group-block {
   margin-bottom: 1rem;
 }
