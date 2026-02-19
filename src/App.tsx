@@ -14,10 +14,13 @@ type ConcordanceRow = {
   bookId: number;
   pos: number;
   frag: string;
+  urn?: string;
 };
 
-type ConcordanceResponse = {
-  rows?: ConcordanceRow[];
+type ConcTableResponse = {
+  docid?: Record<string, number | string>;
+  urn?: Record<string, string>;
+  conc?: Record<string, string>;
 };
 
 type GroupEditorRow = {
@@ -36,7 +39,7 @@ type GroupResult = {
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
-const API_BASE = "https://api.nb.no/dhlab/imag";
+const API_BASE = "https://api.nb.no/dhlab";
 
 function parseYear(rawYear: string | undefined): number | null {
   if (!rawYear) return null;
@@ -123,10 +126,7 @@ function App() {
     [corpus, minYear, maxYear]
   );
 
-  const metadataById = useMemo(
-    () => new Map(corpus.map((entry) => [entry.id, entry])),
-    [corpus]
-  );
+  const metadataById = useMemo(() => new Map(corpus.map((entry) => [entry.id, entry])), [corpus]);
 
   const countsByYear = useMemo(() => {
     const counts = new Map<number, number>();
@@ -140,29 +140,19 @@ function App() {
 
   async function fetchConcordanceRowsForQuery(
     searchQuery: string,
-    filterIds: number[]
+    filteredEntries: CorpusEntry[]
   ): Promise<ConcordanceRow[]> {
-    const words = searchQuery.trim().split(/\s+/).filter(Boolean);
-    const wordA = words[0] ?? "";
-    const wordB = words[1] ?? "";
-
+    const dhlabids = filteredEntries.map((entry) => entry.id);
     const payload = {
-      wordA,
-      wordB,
-      window: Math.max(before, after),
-      before,
-      after,
-      perBook: Math.max(1, Math.floor(perBook)),
-      docSamples: Math.max(1, Math.floor(docSamples)),
-      totalLimit: Math.max(1, Math.floor(totalLimit)),
-      schema: "unigrams",
-      useFilter: filterIds.length > 0,
-      filterIds,
-      symmetric: true,
-      excludeSelf: false
+      query: searchQuery,
+      html_formatting: true,
+      trigram_index: false,
+      window: Math.max(1, Math.min(25, Math.max(before, after))),
+      limit: Math.max(1, Math.min(1000, Math.floor(totalLimit))),
+      dhlabids
     };
 
-    const response = await fetch(`${API_BASE}/concordance`, {
+    const response = await fetch(`${API_BASE}/conc`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -173,8 +163,25 @@ function App() {
       throw new Error(`HTTP ${response.status}: ${message}`);
     }
 
-    const data: ConcordanceResponse = await response.json();
-    return Array.isArray(data.rows) ? data.rows : [];
+    const data: ConcTableResponse = await response.json();
+    const docid = data.docid ?? {};
+    const conc = data.conc ?? {};
+    const urn = data.urn ?? {};
+    const indices = Object.keys(conc);
+
+    return indices
+      .map((idx, pos) => {
+        const id = Number(docid[idx]);
+        const frag = String(conc[idx] ?? "");
+        if (!Number.isFinite(id) || !frag) return null;
+        return {
+          bookId: id,
+          pos,
+          frag,
+          urn: urn[idx]
+        } as ConcordanceRow;
+      })
+      .filter((row): row is ConcordanceRow => !!row);
   }
 
   async function searchConcordance() {
@@ -188,14 +195,12 @@ function App() {
       return;
     }
 
-    const filterIds = filteredCorpus.map((entry) => entry.id);
-
     setIsLoading(true);
     setRows([]);
     setStatus("Soker i konkordans...");
 
     try {
-      const resultRows = await fetchConcordanceRowsForQuery(trimmedQuery, filterIds);
+      const resultRows = await fetchConcordanceRowsForQuery(trimmedQuery, filteredCorpus);
 
       setRows(resultRows);
       setStatus(
@@ -235,55 +240,20 @@ function App() {
     setGroupLoading(true);
     setGroupResults([]);
     setGroupStatus("Kjorer aggregert konkordanstelling...");
-    const filterIds = filteredCorpus.map((entry) => entry.id);
 
     try {
       const allResults: GroupResult[] = [];
-      let fallbackGroups = 0;
 
       for (const group of cleanGroups) {
-        const orQueryPayload = {
-          termGroups: [group.variants],
-          before: Math.max(0, Math.floor(before)),
-          after: Math.max(0, Math.floor(after)),
-          perBook: Math.max(1, Math.floor(perBook)),
-          docSamples: Math.max(1, Math.floor(docSamples)),
-          totalLimit: Math.max(1, Math.floor(totalLimit)),
-          schema: "unigrams",
-          useFilter: filterIds.length > 0,
-          filterIds,
-          maxVariants: Math.max(group.variants.length, 4)
-        };
-
-        let groupRowsRaw: ConcordanceRow[] = [];
-        let usedFallback = false;
-
-        const response = await fetch(`${API_BASE}/or_query`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(orQueryPayload)
-        });
-
-        if (response.ok) {
-          const data: ConcordanceResponse = await response.json();
-          groupRowsRaw = Array.isArray(data.rows) ? data.rows : [];
-        } else {
-          usedFallback = true;
-          fallbackGroups += 1;
-          for (const variant of group.variants) {
-            try {
-              const variantRows = await fetchConcordanceRowsForQuery(variant, filterIds);
-              groupRowsRaw.push(...variantRows);
-            } catch {
-              // Continue even if one variant fails; we still use successful variants.
-            }
-          }
-        }
+        const queryExpr = group.variants
+          .map((variant) => `"${variant.replace(/"/g, '""')}"`)
+          .join(" OR ");
+        const groupRowsRaw = await fetchConcordanceRowsForQuery(queryExpr, filteredCorpus);
 
         // Deduplicate identical hits so one paragraph match is counted once per group.
         const uniqueHits = Array.from(
           new Map(
-            groupRowsRaw.map((row) => [`${row.bookId}-${row.pos}-${row.frag}`, row] as const)
+            groupRowsRaw.map((row) => [`${row.bookId}-${row.frag}`, row] as const)
           ).values()
         );
 
@@ -295,7 +265,7 @@ function App() {
         }
 
         allResults.push({
-          group: usedFallback ? `${group.group} (fallback)` : group.group,
+          group: group.group,
           total: uniqueHits.length,
           byYear: Array.from(byYearMap.entries()).sort((a, b) => a[0] - b[0]),
           sampleRows: uniqueHits.slice(0, 40)
@@ -303,11 +273,7 @@ function App() {
       }
 
       setGroupResults(allResults);
-      const fallbackText =
-        fallbackGroups > 0
-          ? ` Fallback brukt for ${fallbackGroups} gruppe(r).`
-          : "";
-      setGroupStatus(`Ferdig: ${allResults.length} grupper analysert for ${minYear}-${maxYear}.${fallbackText}`);
+      setGroupStatus(`Ferdig: ${allResults.length} grupper analysert for ${minYear}-${maxYear}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Ukjent feil";
       setGroupStatus(`Aggregert kjoring feilet: ${message}`);
@@ -491,7 +457,10 @@ function App() {
               rows.map((row, index) => {
                 const meta = metadataById.get(row.bookId);
                 const label = [meta?.year, meta?.title].filter(Boolean).join(" - ");
-                const link = meta?.link || (meta?.urn ? `https://www.nb.no/items/${meta.urn}` : "");
+                const resolvedUrn = row.urn || meta?.urn || "";
+                const link = resolvedUrn
+                  ? `https://www.nb.no/items/${resolvedUrn}?searchText=${encodeURIComponent(query.trim())}`
+                  : "";
                 return (
                   <article key={`${row.bookId}-${row.pos}-${index}`} className="hit">
                     <p>{row.frag}</p>

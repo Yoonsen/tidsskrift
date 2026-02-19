@@ -54,6 +54,14 @@ input {
   font: inherit;
 }
 
+select {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  background: #fff;
+}
+
 textarea {
   border: 1px solid #cbd5e1;
   border-radius: 6px;
