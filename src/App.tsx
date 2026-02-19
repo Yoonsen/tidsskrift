@@ -36,6 +36,7 @@ type GroupResult = {
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
+const API_BASE = "https://api.nb.no/dhlab/imag";
 
 function parseYear(rawYear: string | undefined): number | null {
   if (!rawYear) return null;
@@ -53,6 +54,7 @@ function normalizeVariants(raw: string): string[] {
 
 function App() {
   const [corpus, setCorpus] = useState<CorpusEntry[]>([]);
+  const [activeTab, setActiveTab] = useState<"conc" | "agg">("conc");
   const [query, setQuery] = useState("");
   const [minYear, setMinYear] = useState(DEFAULT_MIN_YEAR);
   const [maxYear, setMaxYear] = useState(DEFAULT_MAX_YEAR);
@@ -136,22 +138,14 @@ function App() {
     return Array.from(counts.entries()).sort((a, b) => a[0] - b[0]);
   }, [rows, metadataById]);
 
-  async function searchConcordance() {
-    const trimmedQuery = query.trim();
-    if (!trimmedQuery) {
-      setStatus("Skriv inn sokeord.");
-      return;
-    }
-    if (filteredCorpus.length === 0) {
-      setStatus("Ingen dokumenter matcher valgt arsintervall.");
-      return;
-    }
-
-    const words = trimmedQuery.split(/\s+/).filter(Boolean);
+  async function fetchConcordanceRowsForQuery(
+    searchQuery: string,
+    filterIds: number[]
+  ): Promise<ConcordanceRow[]> {
+    const words = searchQuery.trim().split(/\s+/).filter(Boolean);
     const wordA = words[0] ?? "";
     const wordB = words[1] ?? "";
 
-    const filterIds = filteredCorpus.map((entry) => entry.id);
     const payload = {
       wordA,
       wordB,
@@ -168,24 +162,40 @@ function App() {
       excludeSelf: false
     };
 
+    const response = await fetch(`${API_BASE}/concordance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`HTTP ${response.status}: ${message}`);
+    }
+
+    const data: ConcordanceResponse = await response.json();
+    return Array.isArray(data.rows) ? data.rows : [];
+  }
+
+  async function searchConcordance() {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      setStatus("Skriv inn sokeord.");
+      return;
+    }
+    if (filteredCorpus.length === 0) {
+      setStatus("Ingen dokumenter matcher valgt arsintervall.");
+      return;
+    }
+
+    const filterIds = filteredCorpus.map((entry) => entry.id);
+
     setIsLoading(true);
     setRows([]);
     setStatus("Soker i konkordans...");
 
     try {
-      const response = await fetch("https://api.nb.no/dhlab/imag/concordance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(`HTTP ${response.status}: ${message}`);
-      }
-
-      const data: ConcordanceResponse = await response.json();
-      const resultRows = Array.isArray(data.rows) ? data.rows : [];
+      const resultRows = await fetchConcordanceRowsForQuery(trimmedQuery, filterIds);
 
       setRows(resultRows);
       setStatus(
@@ -229,9 +239,10 @@ function App() {
 
     try {
       const allResults: GroupResult[] = [];
+      let fallbackGroups = 0;
 
       for (const group of cleanGroups) {
-        const payload = {
+        const orQueryPayload = {
           termGroups: [group.variants],
           before: Math.max(0, Math.floor(before)),
           after: Math.max(0, Math.floor(after)),
@@ -244,19 +255,30 @@ function App() {
           maxVariants: Math.max(group.variants.length, 4)
         };
 
-        const response = await fetch("https://api.nb.no/dhlab/imag/or_query", {
+        let groupRowsRaw: ConcordanceRow[] = [];
+        let usedFallback = false;
+
+        const response = await fetch(`${API_BASE}/or_query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(orQueryPayload)
         });
 
-        if (!response.ok) {
-          const message = await response.text();
-          throw new Error(`${group.group}: HTTP ${response.status}: ${message}`);
+        if (response.ok) {
+          const data: ConcordanceResponse = await response.json();
+          groupRowsRaw = Array.isArray(data.rows) ? data.rows : [];
+        } else {
+          usedFallback = true;
+          fallbackGroups += 1;
+          for (const variant of group.variants) {
+            try {
+              const variantRows = await fetchConcordanceRowsForQuery(variant, filterIds);
+              groupRowsRaw.push(...variantRows);
+            } catch {
+              // Continue even if one variant fails; we still use successful variants.
+            }
+          }
         }
-
-        const data: ConcordanceResponse = await response.json();
-        const groupRowsRaw = Array.isArray(data.rows) ? data.rows : [];
 
         // Deduplicate identical hits so one paragraph match is counted once per group.
         const uniqueHits = Array.from(
@@ -273,7 +295,7 @@ function App() {
         }
 
         allResults.push({
-          group: group.group,
+          group: usedFallback ? `${group.group} (fallback)` : group.group,
           total: uniqueHits.length,
           byYear: Array.from(byYearMap.entries()).sort((a, b) => a[0] - b[0]),
           sampleRows: uniqueHits.slice(0, 40)
@@ -281,9 +303,11 @@ function App() {
       }
 
       setGroupResults(allResults);
-      setGroupStatus(
-        `Ferdig: ${allResults.length} grupper analysert for ${minYear}-${maxYear}.`
-      );
+      const fallbackText =
+        fallbackGroups > 0
+          ? ` Fallback brukt for ${fallbackGroups} gruppe(r).`
+          : "";
+      setGroupStatus(`Ferdig: ${allResults.length} grupper analysert for ${minYear}-${maxYear}.${fallbackText}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Ukjent feil";
       setGroupStatus(`Aggregert kjoring feilet: ${message}`);
@@ -395,171 +419,51 @@ function App() {
         <p className="subtle">Dokumenter i valgt arsomrade: {filteredCorpus.length}</p>
       </section>
 
-      <section className="controls">
-        <h2>Konkordansvisning</h2>
-        <label>
-          Sok
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                void searchConcordance();
-              }
-            }}
-            placeholder="f.eks. Amerika"
-          />
-        </label>
-        <button onClick={() => void searchConcordance()} disabled={isLoading}>
-          {isLoading ? "Soker..." : "Kjor konkordans"}
+      <section className="tabs">
+        <button
+          type="button"
+          className={activeTab === "conc" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("conc")}
+        >
+          Konkordans
         </button>
-        <p className="status">{status}</p>
+        <button
+          type="button"
+          className={activeTab === "agg" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("agg")}
+        >
+          Aggregert
+        </button>
       </section>
 
-      <section className="counts">
-        <h2>Telling av konkordanser per ar</h2>
-        {countsByYear.length === 0 ? (
-          <p className="subtle">Ingen treff ennå.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Ar</th>
-                <th>Treff</th>
-              </tr>
-            </thead>
-            <tbody>
-              {countsByYear.map(([year, count]) => (
-                <tr key={year}>
-                  <td>{year}</td>
-                  <td>{count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      {activeTab === "conc" ? (
+        <>
+          <section className="controls">
+            <h2>Konkordansvisning</h2>
+            <label>
+              Sok
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void searchConcordance();
+                  }
+                }}
+                placeholder="f.eks. Amerika"
+              />
+            </label>
+            <button onClick={() => void searchConcordance()} disabled={isLoading}>
+              {isLoading ? "Soker..." : "Kjor konkordans"}
+            </button>
+            <p className="status">{status}</p>
+          </section>
 
-      <section className="results">
-        <h2>Konkordanser ({rows.length})</h2>
-        {rows.length === 0 ? (
-          <p className="subtle">Ingen resultater å vise.</p>
-        ) : (
-          rows.map((row, index) => {
-            const meta = metadataById.get(row.bookId);
-            const label = [meta?.year, meta?.title].filter(Boolean).join(" - ");
-            const link = meta?.link || (meta?.urn ? `https://www.nb.no/items/${meta.urn}` : "");
-            return (
-              <article key={`${row.bookId}-${row.pos}-${index}`} className="hit">
-                <p>{row.frag}</p>
-                <p className="meta">
-                  {label || `dhlabid ${row.bookId}`}
-                  {link ? (
-                    <>
-                      {" "}
-                      -{" "}
-                      <a href={link} target="_blank" rel="noreferrer">
-                        vis i NB
-                      </a>
-                    </>
-                  ) : null}
-                </p>
-              </article>
-            );
-          })
-        )}
-      </section>
-
-      <section className="controls">
-        <h2>Aggregert visning (gruppe + realiseringer)</h2>
-        <p className="subtle">
-          Legg inn en gruppe per rad. I kolonnen "Realiseringer" kan du bruke komma, semikolon
-          eller linjeskift.
-        </p>
-        {groupRows.map((row) => (
-          <div key={row.key} className="two-col">
-            <input
-              value={row.group}
-              onChange={(event) => updateGroupRow(row.key, "group", event.target.value)}
-              placeholder="Gruppe, f.eks. Amerika"
-            />
-            <textarea
-              value={row.variants}
-              onChange={(event) => updateGroupRow(row.key, "variants", event.target.value)}
-              placeholder="Varianter, f.eks. Amerika, De forenede stater, U.S.A."
-              rows={2}
-            />
-          </div>
-        ))}
-
-        <div className="button-row">
-          <button
-            type="button"
-            onClick={() =>
-              setGroupRows((current) => [
-                ...current,
-                { key: crypto.randomUUID(), group: "", variants: "" }
-              ])
-            }
-          >
-            Legg til rad
-          </button>
-          <button type="button" onClick={() => void runGroupedAggregation()} disabled={groupLoading}>
-            {groupLoading ? "Kjorer..." : "Kjor aggregert"}
-          </button>
-        </div>
-        <p className="status">{groupStatus}</p>
-      </section>
-
-      <section className="counts">
-        <h2>Aggregert kurve per gruppe</h2>
-        {chartSeries.length === 0 ? (
-          <p className="subtle">Ingen aggregert kurve ennå.</p>
-        ) : (
-          <>
-            <svg viewBox="0 0 960 300" className="chart">
-              <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
-              <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
-              {chartSeries.map((series) => {
-                const polyline = series.points
-                  .map((point, index) => {
-                    const x = 40 + (880 * index) / Math.max(series.points.length - 1, 1);
-                    const y = 260 - (240 * point.value) / maxChartValue;
-                    return `${x},${y}`;
-                  })
-                  .join(" ");
-                return (
-                  <polyline
-                    key={series.group}
-                    fill="none"
-                    stroke={series.color}
-                    strokeWidth="2.5"
-                    points={polyline}
-                  />
-                );
-              })}
-            </svg>
-            <div className="legend">
-              {chartSeries.map((series) => (
-                <span key={series.group}>
-                  <i style={{ backgroundColor: series.color }} /> {series.group}
-                </span>
-              ))}
-            </div>
-          </>
-        )}
-      </section>
-
-      <section className="counts">
-        <h2>Aggregert tabell per gruppe</h2>
-        {groupResults.length === 0 ? (
-          <p className="subtle">Ingen aggregerte resultater ennå.</p>
-        ) : (
-          groupResults.map((group) => (
-            <div key={group.group} className="group-block">
-              <h3>
-                {group.group} (totalt {group.total})
-              </h3>
+          <section className="counts">
+            <h2>Telling av konkordanser per ar</h2>
+            {countsByYear.length === 0 ? (
+              <p className="subtle">Ingen treff ennå.</p>
+            ) : (
               <table>
                 <thead>
                   <tr>
@@ -568,29 +472,172 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {group.byYear.map(([year, count]) => (
-                    <tr key={`${group.group}-${year}`}>
+                  {countsByYear.map(([year, count]) => (
+                    <tr key={year}>
                       <td>{year}</td>
                       <td>{count}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <details>
-                <summary>Vis eksempel-konkordanser ({group.sampleRows.length})</summary>
-                {group.sampleRows.map((row, idx) => {
-                  const meta = metadataById.get(row.bookId);
-                  return (
-                    <p key={`${group.group}-${row.bookId}-${row.pos}-${idx}`} className="meta">
-                      {meta?.year ?? "?"}: {row.frag}
+            )}
+          </section>
+
+          <section className="results results-pane">
+            <h2>Konkordanser ({rows.length})</h2>
+            {rows.length === 0 ? (
+              <p className="subtle">Ingen resultater å vise.</p>
+            ) : (
+              rows.map((row, index) => {
+                const meta = metadataById.get(row.bookId);
+                const label = [meta?.year, meta?.title].filter(Boolean).join(" - ");
+                const link = meta?.link || (meta?.urn ? `https://www.nb.no/items/${meta.urn}` : "");
+                return (
+                  <article key={`${row.bookId}-${row.pos}-${index}`} className="hit">
+                    <p>{row.frag}</p>
+                    <p className="meta">
+                      {label || `dhlabid ${row.bookId}`}
+                      {link ? (
+                        <>
+                          {" "}
+                          -{" "}
+                          <a href={link} target="_blank" rel="noreferrer">
+                            vis i NB
+                          </a>
+                        </>
+                      ) : null}
                     </p>
-                  );
-                })}
-              </details>
+                  </article>
+                );
+              })
+            )}
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="controls">
+            <h2>Aggregert visning (gruppe + realiseringer)</h2>
+            <p className="subtle">
+              Legg inn en gruppe per rad. I kolonnen "Realiseringer" kan du bruke komma, semikolon
+              eller linjeskift.
+            </p>
+            {groupRows.map((row) => (
+              <div key={row.key} className="two-col">
+                <input
+                  value={row.group}
+                  onChange={(event) => updateGroupRow(row.key, "group", event.target.value)}
+                  placeholder="Gruppe, f.eks. Amerika"
+                />
+                <textarea
+                  value={row.variants}
+                  onChange={(event) => updateGroupRow(row.key, "variants", event.target.value)}
+                  placeholder="Varianter, f.eks. Amerika, De forenede stater, U.S.A."
+                  rows={2}
+                />
+              </div>
+            ))}
+
+            <div className="button-row">
+              <button
+                type="button"
+                onClick={() =>
+                  setGroupRows((current) => [
+                    ...current,
+                    { key: crypto.randomUUID(), group: "", variants: "" }
+                  ])
+                }
+              >
+                Legg til rad
+              </button>
+              <button type="button" onClick={() => void runGroupedAggregation()} disabled={groupLoading}>
+                {groupLoading ? "Kjorer..." : "Kjor aggregert"}
+              </button>
             </div>
-          ))
-        )}
-      </section>
+            <p className="status">{groupStatus}</p>
+          </section>
+
+          <section className="counts">
+            <h2>Aggregert kurve per gruppe</h2>
+            {chartSeries.length === 0 ? (
+              <p className="subtle">Ingen aggregert kurve ennå.</p>
+            ) : (
+              <>
+                <svg viewBox="0 0 960 300" className="chart">
+                  <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
+                  <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
+                  {chartSeries.map((series) => {
+                    const polyline = series.points
+                      .map((point, index) => {
+                        const x = 40 + (880 * index) / Math.max(series.points.length - 1, 1);
+                        const y = 260 - (240 * point.value) / maxChartValue;
+                        return `${x},${y}`;
+                      })
+                      .join(" ");
+                    return (
+                      <polyline
+                        key={series.group}
+                        fill="none"
+                        stroke={series.color}
+                        strokeWidth="2.5"
+                        points={polyline}
+                      />
+                    );
+                  })}
+                </svg>
+                <div className="legend">
+                  {chartSeries.map((series) => (
+                    <span key={series.group}>
+                      <i style={{ backgroundColor: series.color }} /> {series.group}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className="counts">
+            <h2>Aggregert tabell per gruppe</h2>
+            {groupResults.length === 0 ? (
+              <p className="subtle">Ingen aggregerte resultater ennå.</p>
+            ) : (
+              groupResults.map((group) => (
+                <div key={group.group} className="group-block">
+                  <h3>
+                    {group.group} (totalt {group.total})
+                  </h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ar</th>
+                        <th>Treff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.byYear.map(([year, count]) => (
+                        <tr key={`${group.group}-${year}`}>
+                          <td>{year}</td>
+                          <td>{count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <details>
+                    <summary>Vis eksempel-konkordanser ({group.sampleRows.length})</summary>
+                    {group.sampleRows.map((row, idx) => {
+                      const meta = metadataById.get(row.bookId);
+                      return (
+                        <p key={`${group.group}-${row.bookId}-${row.pos}-${idx}`} className="meta">
+                          {meta?.year ?? "?"}: {row.frag}
+                        </p>
+                      );
+                    })}
+                  </details>
+                </div>
+              ))
+            )}
+          </section>
+        </>
+      )}
     </main>
   );
 }

@@ -108,6 +108,22 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.tab {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.tab.active {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
@@ -166,4 +182,12 @@ td {
 
 .group-block {
   margin-bottom: 1rem;
+}
+
+.results-pane {
+  resize: vertical;
+  overflow: auto;
+  min-height: 260px;
+  max-height: 75vh;
+  height: 55vh;
 }
