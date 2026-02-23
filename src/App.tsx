@@ -143,6 +143,11 @@ function App() {
   const [groupResults, setGroupResults] = useState<GroupResult[]>([]);
   const [groupStatus, setGroupStatus] = useState("Ingen aggregert kjøring ennå.");
   const [groupLoading, setGroupLoading] = useState(false);
+  const [aggProgress, setAggProgress] = useState<{ done: number; total: number; currentGroup: string }>({
+    done: 0,
+    total: 0,
+    currentGroup: ""
+  });
   const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
   const groupFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -313,12 +318,15 @@ function App() {
 
     setGroupLoading(true);
     setGroupResults([]);
+    setAggProgress({ done: 0, total: cleanGroups.length, currentGroup: "" });
     setGroupStatus("Kjører aggregert konkordanstelling …");
 
     try {
       const allResults: GroupResult[] = [];
 
-      for (const group of cleanGroups) {
+      for (let i = 0; i < cleanGroups.length; i += 1) {
+        const group = cleanGroups[i];
+        setAggProgress({ done: i, total: cleanGroups.length, currentGroup: group.group });
         const queryExpr = group.variants
           .map((variant) => `"${variant.replace(/"/g, '""')}"`)
           .join(" OR ");
@@ -344,6 +352,7 @@ function App() {
           byYear: Array.from(byYearMap.entries()).sort((a, b) => a[0] - b[0]),
           sampleRows: uniqueHits.slice(0, 40)
         });
+        setAggProgress({ done: i + 1, total: cleanGroups.length, currentGroup: group.group });
       }
 
       setGroupResults(allResults);
@@ -353,6 +362,7 @@ function App() {
       setGroupStatus(`Aggregert kjøring feilet: ${message}`);
     } finally {
       setGroupLoading(false);
+      setAggProgress((current) => ({ ...current, currentGroup: "" }));
     }
   }
 
@@ -512,6 +522,9 @@ function App() {
     }
     return indices.map((index) => ({ index, year: fullYearRange[index] }));
   }, [fullYearRange]);
+
+  const aggProgressPercent =
+    aggProgress.total > 0 ? Math.round((aggProgress.done / aggProgress.total) * 100) : 0;
 
   return (
     <main className="page">
@@ -744,6 +757,19 @@ function App() {
               style={{ display: "none" }}
               onChange={handleUploadGroupTemplate}
             />
+            {groupLoading && aggProgress.total > 0 ? (
+              <div className="progress-wrap" aria-live="polite">
+                <div className="progress-label">
+                  <span>
+                    Fremdrift: {aggProgress.done}/{aggProgress.total} ({aggProgressPercent}%)
+                  </span>
+                  {aggProgress.currentGroup ? <span>Gruppe: {aggProgress.currentGroup}</span> : null}
+                </div>
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${aggProgressPercent}%` }} />
+                </div>
+              </div>
+            ) : null}
             <p className="status">{groupStatus}</p>
           </section>
 

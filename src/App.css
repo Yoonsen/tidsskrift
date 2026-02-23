@@ -138,6 +138,33 @@ button:disabled {
   opacity: 0.5;
 }
 
+.progress-wrap {
+  margin: 0.35rem 0 0.65rem;
+}
+
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #475569;
+  margin-bottom: 0.3rem;
+}
+
+.progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #0f766e;
+  transition: width 180ms ease-out;
+}
+
 .tabs {
   display: flex;
   gap: 0.5rem;
