@@ -1,0 +1,38 @@
+{
+  "app": {
+    "name": "Nylænde",
+    "title": "Nylænde",
+    "language": "nb-NO"
+  },
+  "corpus": {
+    "metadataFile": "Nylænde.csv",
+    "idField": "dhlabid",
+    "urnField": "urn",
+    "yearField": "year",
+    "titleField": "title",
+    "nbLinkTemplate": "https://www.nb.no/items/{URN}?searchText={TERM}"
+  },
+  "search": {
+    "endpoint": "https://api.nb.no/dhlab/conc",
+    "queryType": "fts5",
+    "window": 25,
+    "limit": 2000,
+    "htmlFormatting": true,
+    "trigramIndex": false
+  },
+  "defaults": {
+    "fromYear": 1887,
+    "toYear": 1920
+  },
+  "aggregation": {
+    "groupFormat": "Group: variant | variant | variant",
+    "groupUploadFormats": ["txt", "json"],
+    "downloadFormats": ["group-template-txt", "aggregated-csv"]
+  },
+  "deploy": {
+    "platform": "github-pages",
+    "workflowFile": ".github/workflows/vite-build.yml",
+    "basePathEnvVar": "BASE_PATH",
+    "basePathStrategy": "/${repoName}/"
+  }
+}

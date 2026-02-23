@@ -39,7 +39,7 @@ type GroupResult = {
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
 const FTS_WINDOW = 25;
-const FTS_LIMIT = 1000;
+const FTS_LIMIT = 2000;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
 const API_BASE = "https://api.nb.no/dhlab";
 

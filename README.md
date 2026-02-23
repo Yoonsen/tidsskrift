@@ -1,4 +1,4 @@
-## Nylaende Concordance App
+## Nylænde Concordance App
 
 React + Vite app for DH-lab concordance search against the `Nylænde.csv` corpus.
 
@@ -25,9 +25,16 @@ BASE_PATH=/nylende/ npm run build
 
 - Loads corpus metadata from `Nylænde.csv`
 - Filters corpus by year range (default 1887-1920)
-- Calls `https://api.nb.no/dhlab/imag/concordance`
-- Shows concordance hits and simple counts per year
+- Calls `https://api.nb.no/dhlab/conc` (FTS5)
+- Shows concordance hits, year trends, and grouped aggregation
+- Supports group import/export and aggregated CSV download
 
 GitHub Actions workflow for build verification is in `.github/workflows/vite-build.yml`.
 
 The workflow now builds and deploys to GitHub Pages on `main`.
+
+### Reusable manifest and architecture
+
+- Manifest: `app.manifest.json`
+- Architecture: `docs/ARCHITECTURE.md`
+- Template guide: `docs/TEMPLATE_GUIDE.md`
