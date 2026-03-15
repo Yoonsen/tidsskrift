@@ -36,6 +36,8 @@ type GroupResult = {
   sampleRows: ConcordanceRow[];
 };
 
+type ChartStyleMode = "color" | "bw" | "bw-dashed";
+
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
 const FTS_WINDOW = 25;
@@ -152,7 +154,7 @@ function App() {
   const [plotStartYear, setPlotStartYear] = useState(DEFAULT_MIN_YEAR);
   const [plotEndYear, setPlotEndYear] = useState(DEFAULT_MAX_YEAR);
   const [smoothingWindow, setSmoothingWindow] = useState(1);
-  const [blackWhiteMode, setBlackWhiteMode] = useState(false);
+  const [chartStyleMode, setChartStyleMode] = useState<ChartStyleMode>("color");
   const [status, setStatus] = useState("Laster korpus …");
   const [isLoading, setIsLoading] = useState(false);
   const [rows, setRows] = useState<ConcordanceRow[]>([]);
@@ -681,6 +683,9 @@ function App() {
   const aggProgressPercent =
     aggProgress.total > 0 ? Math.round((aggProgress.done / aggProgress.total) * 100) : 0;
 
+  const useBw = chartStyleMode === "bw" || chartStyleMode === "bw-dashed";
+  const useDashed = chartStyleMode === "bw-dashed";
+
   return (
     <main className="page">
       <h1>Nylænde - konkordanser</h1>
@@ -755,12 +760,15 @@ function App() {
           </label>
         </div>
         <label>
-          <input
-            type="checkbox"
-            checked={blackWhiteMode}
-            onChange={(event) => setBlackWhiteMode(event.target.checked)}
-          />{" "}
-          Svart-hvitt (prikkelinjer)
+          Linjestil
+          <select
+            value={chartStyleMode}
+            onChange={(event) => setChartStyleMode(event.target.value as ChartStyleMode)}
+          >
+            <option value="color">Farger</option>
+            <option value="bw">Svart-hvitt</option>
+            <option value="bw-dashed">Svart-hvitt (stiplede linjer)</option>
+          </select>
         </label>
         <div className="grid">
           <div className="subtle">
@@ -834,7 +842,12 @@ function App() {
               <p className="subtle">Ingen treff ennå.</p>
             ) : (
               <div className="chart-resizable compact">
-                <svg ref={concChartRef} viewBox="0 0 960 180" className="chart chart-compact">
+                <svg
+                  ref={concChartRef}
+                  viewBox="0 0 960 180"
+                  preserveAspectRatio="none"
+                  className="chart chart-compact"
+                >
                   <line x1="40" y1="140" x2="920" y2="140" stroke="#cbd5e1" />
                   <line x1="40" y1="20" x2="40" y2="140" stroke="#cbd5e1" />
                   {[0, 0.5, 1].map((ratio) => {
@@ -862,9 +875,9 @@ function App() {
                   })}
                   <polyline
                     fill="none"
-                    stroke={blackWhiteMode ? "#111827" : "#1d4ed8"}
+                    stroke={useBw ? "#111827" : "#1d4ed8"}
                     strokeWidth="2.5"
-                    strokeDasharray={blackWhiteMode ? "6 4" : undefined}
+                    strokeDasharray={useDashed ? "6 4" : undefined}
                     points={concSeriesPoints
                       .map((point, index) => {
                         const x = 40 + (880 * index) / Math.max(concSeriesPoints.length - 1, 1);
@@ -1014,7 +1027,12 @@ function App() {
             ) : (
               <>
                 <div className="chart-resizable">
-                  <svg ref={aggChartRef} viewBox="0 0 960 300" className="chart">
+                  <svg
+                    ref={aggChartRef}
+                    viewBox="0 0 960 300"
+                    preserveAspectRatio="none"
+                    className="chart"
+                  >
                     <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
                     <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
                     {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -1052,9 +1070,9 @@ function App() {
                         <polyline
                           key={series.group}
                           fill="none"
-                          stroke={blackWhiteMode ? "#111827" : series.color}
+                          stroke={useBw ? "#111827" : series.color}
                           strokeWidth="2.5"
-                          strokeDasharray={blackWhiteMode ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
+                          strokeDasharray={useDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
                           points={polyline}
                         />
                       );
@@ -1076,7 +1094,7 @@ function App() {
                       }
                       title="Klikk for å slå kurve av/på"
                     >
-                      <i style={{ backgroundColor: series.color }} /> {series.group}
+                      <i style={{ backgroundColor: useBw ? "#111827" : series.color }} /> {series.group}
                     </button>
                   ))}
                 </div>
