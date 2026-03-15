@@ -41,6 +41,7 @@ const DEFAULT_MAX_YEAR = 1920;
 const FTS_WINDOW = 25;
 const FTS_LIMIT = 2000;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
+const DASH_PATTERNS = ["0", "8 4", "2 3", "10 3 2 3", "12 4", "3 3"];
 const API_BASE = "https://api.nb.no/dhlab";
 
 function parseYear(rawYear: string | undefined): number | null {
@@ -125,12 +126,33 @@ function renderConcordanceHtml(fragment: string): { __html: string } {
   return { __html: fragment };
 }
 
+function smoothPoints(points: Array<{ year: number; value: number }>, windowSize: number) {
+  if (windowSize <= 1 || points.length <= 1) return points;
+
+  const radius = Math.floor(windowSize / 2);
+  return points.map((point, index) => {
+    let sum = 0;
+    let count = 0;
+    const start = Math.max(0, index - radius);
+    const end = Math.min(points.length - 1, index + radius);
+    for (let i = start; i <= end; i += 1) {
+      sum += points[i].value;
+      count += 1;
+    }
+    return { year: point.year, value: sum / count };
+  });
+}
+
 function App() {
   const [corpus, setCorpus] = useState<CorpusEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"conc" | "agg">("conc");
   const [query, setQuery] = useState("");
   const [minYear, setMinYear] = useState(DEFAULT_MIN_YEAR);
   const [maxYear, setMaxYear] = useState(DEFAULT_MAX_YEAR);
+  const [plotStartYear, setPlotStartYear] = useState(DEFAULT_MIN_YEAR);
+  const [plotEndYear, setPlotEndYear] = useState(DEFAULT_MAX_YEAR);
+  const [smoothingWindow, setSmoothingWindow] = useState(1);
+  const [blackWhiteMode, setBlackWhiteMode] = useState(false);
   const [status, setStatus] = useState("Laster korpus …");
   const [isLoading, setIsLoading] = useState(false);
   const [rows, setRows] = useState<ConcordanceRow[]>([]);
@@ -150,6 +172,8 @@ function App() {
   });
   const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
   const groupFileInputRef = useRef<HTMLInputElement>(null);
+  const concChartRef = useRef<SVGSVGElement>(null);
+  const aggChartRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
     Papa.parse<Record<string, string>>(corpusCsvUrl, {
@@ -373,6 +397,133 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  function getSvgSize(svg: SVGSVGElement) {
+    if (svg.clientWidth > 0 && svg.clientHeight > 0) {
+      return { width: svg.clientWidth, height: svg.clientHeight };
+    }
+
+    const viewBox = svg.getAttribute("viewBox");
+    if (viewBox) {
+      const parts = viewBox
+        .trim()
+        .split(/[\s,]+/g)
+        .map((value) => Number(value));
+      if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3])) {
+        return { width: Math.abs(parts[2]), height: Math.abs(parts[3]) };
+      }
+    }
+    return {
+      width: Math.max(svg.clientWidth, 1),
+      height: Math.max(svg.clientHeight, 1)
+    };
+  }
+
+  function serializeSvg(svg: SVGSVGElement) {
+    const cloned = svg.cloneNode(true) as SVGSVGElement;
+    if (!cloned.getAttribute("xmlns")) {
+      cloned.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    }
+    if (!cloned.getAttribute("xmlns:xlink")) {
+      cloned.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+    }
+    return new XMLSerializer().serializeToString(cloned);
+  }
+
+  function downloadSvgFigure(svg: SVGSVGElement, filename: string) {
+    downloadFile(filename, serializeSvg(svg), "image/svg+xml;charset=utf-8");
+  }
+
+  async function downloadPngFigure(svg: SVGSVGElement, filename: string) {
+    const svgText = serializeSvg(svg);
+    const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+    const svgUrl = URL.createObjectURL(svgBlob);
+
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Kunne ikke lese SVG for PNG-eksport."));
+        img.src = svgUrl;
+      });
+
+      const { width, height } = getSvgSize(svg);
+      const scale300Dpi = 300 / 96;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale300Dpi));
+      canvas.height = Math.max(1, Math.round(height * scale300Dpi));
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Kunne ikke opprette canvas-kontekst.");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+      const pngBlob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Kunne ikke lage PNG-fil."));
+        }, "image/png");
+      });
+
+      const pngUrl = URL.createObjectURL(pngBlob);
+      const link = document.createElement("a");
+      link.href = pngUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(pngUrl);
+    } finally {
+      URL.revokeObjectURL(svgUrl);
+    }
+  }
+
+  function handleDownloadConcSvg() {
+    if (!concChartRef.current) {
+      setStatus("Fant ikke konkordansfigur for nedlasting.");
+      return;
+    }
+    downloadSvgFigure(concChartRef.current, "konkordans-per-aar.svg");
+    setStatus("Konkordansfigur lastet ned (SVG).");
+  }
+
+  async function handleDownloadConcPng() {
+    if (!concChartRef.current) {
+      setStatus("Fant ikke konkordansfigur for nedlasting.");
+      return;
+    }
+    try {
+      await downloadPngFigure(concChartRef.current, "konkordans-per-aar-300dpi.png");
+      setStatus("Konkordansfigur lastet ned (PNG 300 dpi).");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ukjent feil";
+      setStatus(`Nedlasting feilet: ${message}`);
+    }
+  }
+
+  function handleDownloadAggSvg() {
+    if (!aggChartRef.current) {
+      setGroupStatus("Fant ikke aggregert figur for nedlasting.");
+      return;
+    }
+    downloadSvgFigure(aggChartRef.current, "aggregert-kurve.svg");
+    setGroupStatus("Aggregert figur lastet ned (SVG).");
+  }
+
+  async function handleDownloadAggPng() {
+    if (!aggChartRef.current) {
+      setGroupStatus("Fant ikke aggregert figur for nedlasting.");
+      return;
+    }
+    try {
+      await downloadPngFigure(aggChartRef.current, "aggregert-kurve-300dpi.png");
+      setGroupStatus("Aggregert figur lastet ned (PNG 300 dpi).");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ukjent feil";
+      setGroupStatus(`Nedlasting feilet: ${message}`);
+    }
+  }
+
   function handleDownloadGroupTemplate() {
     const text = serializeGroupsAsText(groupRows);
     const content = text.length > 0 ? text : "Amerika: Amerika | De forenede stater | U.S.A.";
@@ -440,24 +591,27 @@ function App() {
   }
 
   const fullYearRange = useMemo(() => {
+    const fromYear = Math.max(minYear, Math.min(plotStartYear, plotEndYear));
+    const toYear = Math.min(maxYear, Math.max(plotStartYear, plotEndYear));
     const years: number[] = [];
-    for (let year = minYear; year <= maxYear; year += 1) {
+    for (let year = fromYear; year <= toYear; year += 1) {
       years.push(year);
     }
     return years;
-  }, [minYear, maxYear]);
+  }, [minYear, maxYear, plotStartYear, plotEndYear]);
 
   const chartSeries = useMemo(
     () =>
       groupResults.map((group, index) => {
         const yearMap = new Map(group.byYear);
+        const rawPoints = fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
         return {
           group: group.group,
           color: LINE_COLORS[index % LINE_COLORS.length],
-          points: fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }))
+          points: smoothPoints(rawPoints, smoothingWindow)
         };
       }),
-    [groupResults, fullYearRange]
+    [groupResults, fullYearRange, smoothingWindow]
   );
 
   useEffect(() => {
@@ -465,6 +619,11 @@ function App() {
       current.filter((groupName) => chartSeries.some((series) => series.group === groupName))
     );
   }, [chartSeries]);
+
+  useEffect(() => {
+    setPlotStartYear((current) => Math.max(minYear, Math.min(current, maxYear)));
+    setPlotEndYear((current) => Math.max(minYear, Math.min(current, maxYear)));
+  }, [minYear, maxYear]);
 
   const visibleChartSeries = useMemo(
     () => chartSeries.filter((series) => !hiddenGroups.includes(series.group)),
@@ -495,8 +654,9 @@ function App() {
 
   const concSeriesPoints = useMemo(() => {
     const yearMap = new Map(countsByYear);
-    return fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
-  }, [countsByYear, fullYearRange]);
+    const rawPoints = fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
+    return smoothPoints(rawPoints, smoothingWindow);
+  }, [countsByYear, fullYearRange, smoothingWindow]);
 
   const concMaxValue = useMemo(() => {
     let maxValue = 0;
@@ -548,9 +708,69 @@ function App() {
             />
           </label>
         </div>
+        <h3>Plot-parametre</h3>
+        <div className="year-row">
+          <label>
+            Glatting (punkter)
+            <input
+              type="number"
+              min={1}
+              max={15}
+              step={1}
+              value={smoothingWindow}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (!Number.isFinite(next)) return;
+                setSmoothingWindow(Math.max(1, Math.min(15, Math.round(next))));
+              }}
+            />
+          </label>
+          <label>
+            Plot start
+            <input
+              type="number"
+              value={plotStartYear}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (!Number.isFinite(next)) return;
+                const bounded = Math.max(minYear, Math.min(next, maxYear));
+                setPlotStartYear(bounded);
+                setPlotEndYear((current) => Math.max(current, bounded));
+              }}
+            />
+          </label>
+          <label>
+            Plot slutt
+            <input
+              type="number"
+              value={plotEndYear}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (!Number.isFinite(next)) return;
+                const bounded = Math.max(minYear, Math.min(next, maxYear));
+                setPlotEndYear(bounded);
+                setPlotStartYear((current) => Math.min(current, bounded));
+              }}
+            />
+          </label>
+        </div>
+        <label>
+          <input
+            type="checkbox"
+            checked={blackWhiteMode}
+            onChange={(event) => setBlackWhiteMode(event.target.checked)}
+          />{" "}
+          Svart-hvitt (prikkelinjer)
+        </label>
         <div className="grid">
           <div className="subtle">
             FTS5-parametre: <code>window={FTS_WINDOW}</code>, <code>limit={FTS_LIMIT}</code>
+          </div>
+          <div className="subtle">
+            Plotvisning:{" "}
+            {fullYearRange.length > 0
+              ? `${fullYearRange[0]}-${fullYearRange[fullYearRange.length - 1]}`
+              : "ingen år i valgt intervall"}
           </div>
         </div>
         <p className="subtle">Dokumenter i valgt årsområde: {filteredCorpus.length}</p>
@@ -602,48 +822,59 @@ function App() {
 
           <section className="counts">
             <h2>Telling av konkordanser per år</h2>
+            <div className="button-row utility-row">
+              <button type="button" onClick={handleDownloadConcSvg} disabled={countsByYear.length === 0}>
+                Last ned figur (SVG)
+              </button>
+              <button type="button" onClick={() => void handleDownloadConcPng()} disabled={countsByYear.length === 0}>
+                Last ned figur (PNG 300 dpi)
+              </button>
+            </div>
             {countsByYear.length === 0 ? (
               <p className="subtle">Ingen treff ennå.</p>
             ) : (
-              <svg viewBox="0 0 960 180" className="chart chart-compact">
-                <line x1="40" y1="140" x2="920" y2="140" stroke="#cbd5e1" />
-                <line x1="40" y1="20" x2="40" y2="140" stroke="#cbd5e1" />
-                {[0, 0.5, 1].map((ratio) => {
-                  const y = 140 - 120 * ratio;
-                  const value = Math.round(concMaxValue * ratio);
-                  return (
-                    <g key={`conc-y-${ratio}`}>
-                      <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
-                      <text x="34" y={y + 4} textAnchor="end" className="axis-text">
-                        {value}
-                      </text>
-                    </g>
-                  );
-                })}
-                {concXAxisTicks.map((tick) => {
-                  const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
-                  return (
-                    <g key={`conc-x-${tick.year}`}>
-                      <line x1={x} y1="140" x2={x} y2="144" stroke="#94a3b8" />
-                      <text x={x} y="160" textAnchor="middle" className="axis-text">
-                        {tick.year}
-                      </text>
-                    </g>
-                  );
-                })}
-                <polyline
-                  fill="none"
-                  stroke="#1d4ed8"
-                  strokeWidth="2.5"
-                  points={concSeriesPoints
-                    .map((point, index) => {
-                      const x = 40 + (880 * index) / Math.max(concSeriesPoints.length - 1, 1);
-                      const y = 140 - (120 * point.value) / concMaxValue;
-                      return `${x},${y}`;
-                    })
-                    .join(" ")}
-                />
-              </svg>
+              <div className="chart-resizable compact">
+                <svg ref={concChartRef} viewBox="0 0 960 180" className="chart chart-compact">
+                  <line x1="40" y1="140" x2="920" y2="140" stroke="#cbd5e1" />
+                  <line x1="40" y1="20" x2="40" y2="140" stroke="#cbd5e1" />
+                  {[0, 0.5, 1].map((ratio) => {
+                    const y = 140 - 120 * ratio;
+                    const value = Math.round(concMaxValue * ratio);
+                    return (
+                      <g key={`conc-y-${ratio}`}>
+                        <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
+                        <text x="34" y={y + 4} textAnchor="end" className="axis-text">
+                          {value}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {concXAxisTicks.map((tick) => {
+                    const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                    return (
+                      <g key={`conc-x-${tick.year}`}>
+                        <line x1={x} y1="140" x2={x} y2="144" stroke="#94a3b8" />
+                        <text x={x} y="160" textAnchor="middle" className="axis-text">
+                          {tick.year}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  <polyline
+                    fill="none"
+                    stroke={blackWhiteMode ? "#111827" : "#1d4ed8"}
+                    strokeWidth="2.5"
+                    strokeDasharray={blackWhiteMode ? "6 4" : undefined}
+                    points={concSeriesPoints
+                      .map((point, index) => {
+                        const x = 40 + (880 * index) / Math.max(concSeriesPoints.length - 1, 1);
+                        const y = 140 - (120 * point.value) / concMaxValue;
+                        return `${x},${y}`;
+                      })
+                      .join(" ")}
+                  />
+                </svg>
+              </div>
             )}
           </section>
 
@@ -770,55 +1001,66 @@ function App() {
 
           <section className="counts">
             <h2>Aggregert kurve per gruppe</h2>
+            <div className="button-row utility-row">
+              <button type="button" onClick={handleDownloadAggSvg} disabled={chartSeries.length === 0}>
+                Last ned figur (SVG)
+              </button>
+              <button type="button" onClick={() => void handleDownloadAggPng()} disabled={chartSeries.length === 0}>
+                Last ned figur (PNG 300 dpi)
+              </button>
+            </div>
             {chartSeries.length === 0 ? (
               <p className="subtle">Ingen aggregert kurve ennå.</p>
             ) : (
               <>
-                <svg viewBox="0 0 960 300" className="chart">
-                  <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
-                  <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
-                  {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-                    const y = 260 - 240 * ratio;
-                    const value = Math.round(maxChartValue * ratio);
-                    return (
-                      <g key={`y-${ratio}`}>
-                        <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
-                        <text x="34" y={y + 4} textAnchor="end" className="axis-text">
-                          {value}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {xAxisTicks.map((tick) => {
-                    const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
-                    return (
-                      <g key={`x-${tick.year}`}>
-                        <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
-                        <text x={x} y="278" textAnchor="middle" className="axis-text">
-                          {tick.year}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {visibleChartSeries.map((series) => {
-                    const polyline = series.points
-                      .map((point, index) => {
-                        const x = 40 + (880 * index) / Math.max(series.points.length - 1, 1);
-                        const y = 260 - (240 * point.value) / maxChartValue;
-                        return `${x},${y}`;
-                      })
-                      .join(" ");
-                    return (
-                      <polyline
-                        key={series.group}
-                        fill="none"
-                        stroke={series.color}
-                        strokeWidth="2.5"
-                        points={polyline}
-                      />
-                    );
-                  })}
-                </svg>
+                <div className="chart-resizable">
+                  <svg ref={aggChartRef} viewBox="0 0 960 300" className="chart">
+                    <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
+                    <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
+                    {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                      const y = 260 - 240 * ratio;
+                      const value = Math.round(maxChartValue * ratio);
+                      return (
+                        <g key={`y-${ratio}`}>
+                          <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
+                          <text x="34" y={y + 4} textAnchor="end" className="axis-text">
+                            {value}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {xAxisTicks.map((tick) => {
+                      const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                      return (
+                        <g key={`x-${tick.year}`}>
+                          <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
+                          <text x={x} y="278" textAnchor="middle" className="axis-text">
+                            {tick.year}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {visibleChartSeries.map((series, seriesIndex) => {
+                      const polyline = series.points
+                        .map((point, pointIndex) => {
+                          const x = 40 + (880 * pointIndex) / Math.max(series.points.length - 1, 1);
+                          const y = 260 - (240 * point.value) / maxChartValue;
+                          return `${x},${y}`;
+                        })
+                        .join(" ");
+                      return (
+                        <polyline
+                          key={series.group}
+                          fill="none"
+                          stroke={blackWhiteMode ? "#111827" : series.color}
+                          strokeWidth="2.5"
+                          strokeDasharray={blackWhiteMode ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
+                          points={polyline}
+                        />
+                      );
+                    })}
+                  </svg>
+                </div>
                 <div className="legend">
                   {chartSeries.map((series) => (
                     <button
