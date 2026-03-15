@@ -145,16 +145,30 @@ function smoothPoints(points: Array<{ year: number; value: number }>, windowSize
   });
 }
 
+function buildYearRange(startYear: number, endYear: number): number[] {
+  const years: number[] = [];
+  for (let year = startYear; year <= endYear; year += 1) {
+    years.push(year);
+  }
+  return years;
+}
+
 function App() {
   const [corpus, setCorpus] = useState<CorpusEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"conc" | "agg">("conc");
   const [query, setQuery] = useState("");
   const [minYear, setMinYear] = useState(DEFAULT_MIN_YEAR);
   const [maxYear, setMaxYear] = useState(DEFAULT_MAX_YEAR);
-  const [plotStartYear, setPlotStartYear] = useState(DEFAULT_MIN_YEAR);
-  const [plotEndYear, setPlotEndYear] = useState(DEFAULT_MAX_YEAR);
-  const [smoothingWindow, setSmoothingWindow] = useState(1);
-  const [chartStyleMode, setChartStyleMode] = useState<ChartStyleMode>("color");
+  const [concPlotStartYear, setConcPlotStartYear] = useState(DEFAULT_MIN_YEAR);
+  const [concPlotEndYear, setConcPlotEndYear] = useState(DEFAULT_MAX_YEAR);
+  const [concSmoothingWindow, setConcSmoothingWindow] = useState(1);
+  const [concChartStyleMode, setConcChartStyleMode] = useState<ChartStyleMode>("color");
+  const [concPlotPanelOpen, setConcPlotPanelOpen] = useState(false);
+  const [aggPlotStartYear, setAggPlotStartYear] = useState(DEFAULT_MIN_YEAR);
+  const [aggPlotEndYear, setAggPlotEndYear] = useState(DEFAULT_MAX_YEAR);
+  const [aggSmoothingWindow, setAggSmoothingWindow] = useState(1);
+  const [aggChartStyleMode, setAggChartStyleMode] = useState<ChartStyleMode>("color");
+  const [aggPlotPanelOpen, setAggPlotPanelOpen] = useState(false);
   const [status, setStatus] = useState("Laster korpus …");
   const [isLoading, setIsLoading] = useState(false);
   const [rows, setRows] = useState<ConcordanceRow[]>([]);
@@ -592,28 +606,96 @@ function App() {
     downloadFile("aggregert-data.csv", lines.join("\n"), "text/csv;charset=utf-8");
   }
 
-  const fullYearRange = useMemo(() => {
-    const fromYear = Math.max(minYear, Math.min(plotStartYear, plotEndYear));
-    const toYear = Math.min(maxYear, Math.max(plotStartYear, plotEndYear));
-    const years: number[] = [];
-    for (let year = fromYear; year <= toYear; year += 1) {
-      years.push(year);
+  const corpusYearBounds = useMemo(() => {
+    const years = corpus.map((entry) => entry.year).filter((year): year is number => year !== null);
+    if (years.length === 0) return { min: minYear, max: maxYear };
+    return { min: Math.min(...years), max: Math.max(...years) };
+  }, [corpus, minYear, maxYear]);
+
+  const concYearBounds = useMemo(() => {
+    const years = countsByYear.map(([year]) => year);
+    if (years.length === 0) return corpusYearBounds;
+    return { min: Math.min(...years), max: Math.max(...years) };
+  }, [countsByYear, corpusYearBounds]);
+
+  const aggYearBounds = useMemo(() => {
+    const years = groupResults.flatMap((group) => group.byYear.map(([year]) => year));
+    if (years.length === 0) return corpusYearBounds;
+    return { min: Math.min(...years), max: Math.max(...years) };
+  }, [groupResults, corpusYearBounds]);
+
+  useEffect(() => {
+    setConcPlotStartYear((current) => {
+      const clamped = Math.max(concYearBounds.min, Math.min(current, concYearBounds.max));
+      return clamped;
+    });
+    setConcPlotEndYear((current) => {
+      const clamped = Math.max(concYearBounds.min, Math.min(current, concYearBounds.max));
+      return clamped;
+    });
+  }, [concYearBounds]);
+
+  useEffect(() => {
+    setAggPlotStartYear((current) => {
+      const clamped = Math.max(aggYearBounds.min, Math.min(current, aggYearBounds.max));
+      return clamped;
+    });
+    setAggPlotEndYear((current) => {
+      const clamped = Math.max(aggYearBounds.min, Math.min(current, aggYearBounds.max));
+      return clamped;
+    });
+  }, [aggYearBounds]);
+
+  const concYearRange = useMemo(() => {
+    const fromYear = Math.max(concYearBounds.min, Math.min(concPlotStartYear, concPlotEndYear));
+    const toYear = Math.min(concYearBounds.max, Math.max(concPlotStartYear, concPlotEndYear));
+    return buildYearRange(fromYear, toYear);
+  }, [concYearBounds, concPlotStartYear, concPlotEndYear]);
+
+  const aggYearRange = useMemo(() => {
+    const fromYear = Math.max(aggYearBounds.min, Math.min(aggPlotStartYear, aggPlotEndYear));
+    const toYear = Math.min(aggYearBounds.max, Math.max(aggPlotStartYear, aggPlotEndYear));
+    return buildYearRange(fromYear, toYear);
+  }, [aggYearBounds, aggPlotStartYear, aggPlotEndYear]);
+
+  const concSeriesPoints = useMemo(() => {
+    const yearMap = new Map(countsByYear);
+    const rawPoints = concYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
+    return smoothPoints(rawPoints, concSmoothingWindow);
+  }, [countsByYear, concYearRange, concSmoothingWindow]);
+
+  const concMaxValue = useMemo(() => {
+    let maxValue = 0;
+    for (const point of concSeriesPoints) {
+      if (point.value > maxValue) maxValue = point.value;
     }
-    return years;
-  }, [minYear, maxYear, plotStartYear, plotEndYear]);
+    return Math.max(maxValue, 1);
+  }, [concSeriesPoints]);
+
+  const concXAxisTicks = useMemo(() => {
+    if (concYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
+    const desiredTickCount = 4;
+    const step = Math.max(1, Math.floor((concYearRange.length - 1) / desiredTickCount));
+    const indices: number[] = [];
+    for (let i = 0; i < concYearRange.length; i += step) indices.push(i);
+    if (indices[indices.length - 1] !== concYearRange.length - 1) {
+      indices.push(concYearRange.length - 1);
+    }
+    return indices.map((index) => ({ index, year: concYearRange[index] }));
+  }, [concYearRange]);
 
   const chartSeries = useMemo(
     () =>
       groupResults.map((group, index) => {
         const yearMap = new Map(group.byYear);
-        const rawPoints = fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
+        const rawPoints = aggYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
         return {
           group: group.group,
           color: LINE_COLORS[index % LINE_COLORS.length],
-          points: smoothPoints(rawPoints, smoothingWindow)
+          points: smoothPoints(rawPoints, aggSmoothingWindow)
         };
       }),
-    [groupResults, fullYearRange, smoothingWindow]
+    [groupResults, aggYearRange, aggSmoothingWindow]
   );
 
   useEffect(() => {
@@ -621,11 +703,6 @@ function App() {
       current.filter((groupName) => chartSeries.some((series) => series.group === groupName))
     );
   }, [chartSeries]);
-
-  useEffect(() => {
-    setPlotStartYear((current) => Math.max(minYear, Math.min(current, maxYear)));
-    setPlotEndYear((current) => Math.max(minYear, Math.min(current, maxYear)));
-  }, [minYear, maxYear]);
 
   const visibleChartSeries = useMemo(
     () => chartSeries.filter((series) => !hiddenGroups.includes(series.group)),
@@ -643,48 +720,24 @@ function App() {
   }, [visibleChartSeries]);
 
   const xAxisTicks = useMemo(() => {
-    if (fullYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
+    if (aggYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
     const desiredTickCount = 6;
-    const step = Math.max(1, Math.floor((fullYearRange.length - 1) / desiredTickCount));
+    const step = Math.max(1, Math.floor((aggYearRange.length - 1) / desiredTickCount));
     const indices: number[] = [];
-    for (let i = 0; i < fullYearRange.length; i += step) indices.push(i);
-    if (indices[indices.length - 1] !== fullYearRange.length - 1) {
-      indices.push(fullYearRange.length - 1);
+    for (let i = 0; i < aggYearRange.length; i += step) indices.push(i);
+    if (indices[indices.length - 1] !== aggYearRange.length - 1) {
+      indices.push(aggYearRange.length - 1);
     }
-    return indices.map((index) => ({ index, year: fullYearRange[index] }));
-  }, [fullYearRange]);
-
-  const concSeriesPoints = useMemo(() => {
-    const yearMap = new Map(countsByYear);
-    const rawPoints = fullYearRange.map((year) => ({ year, value: yearMap.get(year) ?? 0 }));
-    return smoothPoints(rawPoints, smoothingWindow);
-  }, [countsByYear, fullYearRange, smoothingWindow]);
-
-  const concMaxValue = useMemo(() => {
-    let maxValue = 0;
-    for (const point of concSeriesPoints) {
-      if (point.value > maxValue) maxValue = point.value;
-    }
-    return Math.max(maxValue, 1);
-  }, [concSeriesPoints]);
-
-  const concXAxisTicks = useMemo(() => {
-    if (fullYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
-    const desiredTickCount = 4;
-    const step = Math.max(1, Math.floor((fullYearRange.length - 1) / desiredTickCount));
-    const indices: number[] = [];
-    for (let i = 0; i < fullYearRange.length; i += step) indices.push(i);
-    if (indices[indices.length - 1] !== fullYearRange.length - 1) {
-      indices.push(fullYearRange.length - 1);
-    }
-    return indices.map((index) => ({ index, year: fullYearRange[index] }));
-  }, [fullYearRange]);
+    return indices.map((index) => ({ index, year: aggYearRange[index] }));
+  }, [aggYearRange]);
 
   const aggProgressPercent =
     aggProgress.total > 0 ? Math.round((aggProgress.done / aggProgress.total) * 100) : 0;
 
-  const useBw = chartStyleMode === "bw" || chartStyleMode === "bw-dashed";
-  const useDashed = chartStyleMode === "bw-dashed";
+  const concUseBw = concChartStyleMode === "bw" || concChartStyleMode === "bw-dashed";
+  const concUseDashed = concChartStyleMode === "bw-dashed";
+  const aggUseBw = aggChartStyleMode === "bw" || aggChartStyleMode === "bw-dashed";
+  const aggUseDashed = aggChartStyleMode === "bw-dashed";
 
   return (
     <main className="page">
@@ -713,72 +766,9 @@ function App() {
             />
           </label>
         </div>
-        <h3>Plot-parametre</h3>
-        <div className="year-row">
-          <label>
-            Glatting (punkter)
-            <input
-              type="number"
-              min={1}
-              max={15}
-              step={1}
-              value={smoothingWindow}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (!Number.isFinite(next)) return;
-                setSmoothingWindow(Math.max(1, Math.min(15, Math.round(next))));
-              }}
-            />
-          </label>
-          <label>
-            Plot start
-            <input
-              type="number"
-              value={plotStartYear}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (!Number.isFinite(next)) return;
-                const bounded = Math.max(minYear, Math.min(next, maxYear));
-                setPlotStartYear(bounded);
-                setPlotEndYear((current) => Math.max(current, bounded));
-              }}
-            />
-          </label>
-          <label>
-            Plot slutt
-            <input
-              type="number"
-              value={plotEndYear}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (!Number.isFinite(next)) return;
-                const bounded = Math.max(minYear, Math.min(next, maxYear));
-                setPlotEndYear(bounded);
-                setPlotStartYear((current) => Math.min(current, bounded));
-              }}
-            />
-          </label>
-        </div>
-        <label>
-          Linjestil
-          <select
-            value={chartStyleMode}
-            onChange={(event) => setChartStyleMode(event.target.value as ChartStyleMode)}
-          >
-            <option value="color">Farger</option>
-            <option value="bw">Svart-hvitt</option>
-            <option value="bw-dashed">Svart-hvitt (stiplede linjer)</option>
-          </select>
-        </label>
         <div className="grid">
           <div className="subtle">
             FTS5-parametre: <code>window={FTS_WINDOW}</code>, <code>limit={FTS_LIMIT}</code>
-          </div>
-          <div className="subtle">
-            Plotvisning:{" "}
-            {fullYearRange.length > 0
-              ? `${fullYearRange[0]}-${fullYearRange[fullYearRange.length - 1]}`
-              : "ingen år i valgt intervall"}
           </div>
         </div>
         <p className="subtle">Dokumenter i valgt årsområde: {filteredCorpus.length}</p>
@@ -831,6 +821,13 @@ function App() {
           <section className="counts">
             <h2>Telling av konkordanser per år</h2>
             <div className="button-row utility-row">
+              <button
+                type="button"
+                className="chip-btn"
+                onClick={() => setConcPlotPanelOpen((open) => !open)}
+              >
+                Plot-parametre
+              </button>
               <button type="button" onClick={handleDownloadConcSvg} disabled={countsByYear.length === 0}>
                 Last ned figur (SVG)
               </button>
@@ -838,6 +835,74 @@ function App() {
                 Last ned figur (PNG 300 dpi)
               </button>
             </div>
+            {concPlotPanelOpen ? (
+              <div className="plot-popover">
+                <div className="year-row">
+                  <label>
+                    Glatting (punkter)
+                    <input
+                      type="number"
+                      min={1}
+                      max={15}
+                      step={1}
+                      value={concSmoothingWindow}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        setConcSmoothingWindow(Math.max(1, Math.min(15, Math.round(next))));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Linjestil
+                    <select
+                      value={concChartStyleMode}
+                      onChange={(event) => setConcChartStyleMode(event.target.value as ChartStyleMode)}
+                    >
+                      <option value="color">Farger</option>
+                      <option value="bw">Svart-hvitt</option>
+                      <option value="bw-dashed">Svart-hvitt (stiplede linjer)</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="year-row">
+                  <label>
+                    Startår
+                    <input
+                      type="number"
+                      value={concPlotStartYear}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        const bounded = Math.max(concYearBounds.min, Math.min(next, concYearBounds.max));
+                        setConcPlotStartYear(bounded);
+                        setConcPlotEndYear((current) => Math.max(current, bounded));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Sluttår
+                    <input
+                      type="number"
+                      value={concPlotEndYear}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        const bounded = Math.max(concYearBounds.min, Math.min(next, concYearBounds.max));
+                        setConcPlotEndYear(bounded);
+                        setConcPlotStartYear((current) => Math.min(current, bounded));
+                      }}
+                    />
+                  </label>
+                </div>
+                <p className="subtle">
+                  Visning:{" "}
+                  {concYearRange.length > 0
+                    ? `${concYearRange[0]}-${concYearRange[concYearRange.length - 1]}`
+                    : "ingen år i valgt intervall"}
+                </p>
+              </div>
+            ) : null}
             {countsByYear.length === 0 ? (
               <p className="subtle">Ingen treff ennå.</p>
             ) : (
@@ -863,7 +928,7 @@ function App() {
                     );
                   })}
                   {concXAxisTicks.map((tick) => {
-                    const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                    const x = 40 + (880 * tick.index) / Math.max(concYearRange.length - 1, 1);
                     return (
                       <g key={`conc-x-${tick.year}`}>
                         <line x1={x} y1="140" x2={x} y2="144" stroke="#94a3b8" />
@@ -875,9 +940,9 @@ function App() {
                   })}
                   <polyline
                     fill="none"
-                    stroke={useBw ? "#111827" : "#1d4ed8"}
+                    stroke={concUseBw ? "#111827" : "#1d4ed8"}
                     strokeWidth="2.5"
-                    strokeDasharray={useDashed ? "6 4" : undefined}
+                    strokeDasharray={concUseDashed ? "6 4" : undefined}
                     points={concSeriesPoints
                       .map((point, index) => {
                         const x = 40 + (880 * index) / Math.max(concSeriesPoints.length - 1, 1);
@@ -1015,6 +1080,13 @@ function App() {
           <section className="counts">
             <h2>Aggregert kurve per gruppe</h2>
             <div className="button-row utility-row">
+              <button
+                type="button"
+                className="chip-btn"
+                onClick={() => setAggPlotPanelOpen((open) => !open)}
+              >
+                Plot-parametre
+              </button>
               <button type="button" onClick={handleDownloadAggSvg} disabled={chartSeries.length === 0}>
                 Last ned figur (SVG)
               </button>
@@ -1022,6 +1094,74 @@ function App() {
                 Last ned figur (PNG 300 dpi)
               </button>
             </div>
+            {aggPlotPanelOpen ? (
+              <div className="plot-popover">
+                <div className="year-row">
+                  <label>
+                    Glatting (punkter)
+                    <input
+                      type="number"
+                      min={1}
+                      max={15}
+                      step={1}
+                      value={aggSmoothingWindow}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        setAggSmoothingWindow(Math.max(1, Math.min(15, Math.round(next))));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Linjestil
+                    <select
+                      value={aggChartStyleMode}
+                      onChange={(event) => setAggChartStyleMode(event.target.value as ChartStyleMode)}
+                    >
+                      <option value="color">Farger</option>
+                      <option value="bw">Svart-hvitt</option>
+                      <option value="bw-dashed">Svart-hvitt (stiplede linjer)</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="year-row">
+                  <label>
+                    Startår
+                    <input
+                      type="number"
+                      value={aggPlotStartYear}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        const bounded = Math.max(aggYearBounds.min, Math.min(next, aggYearBounds.max));
+                        setAggPlotStartYear(bounded);
+                        setAggPlotEndYear((current) => Math.max(current, bounded));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Sluttår
+                    <input
+                      type="number"
+                      value={aggPlotEndYear}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (!Number.isFinite(next)) return;
+                        const bounded = Math.max(aggYearBounds.min, Math.min(next, aggYearBounds.max));
+                        setAggPlotEndYear(bounded);
+                        setAggPlotStartYear((current) => Math.min(current, bounded));
+                      }}
+                    />
+                  </label>
+                </div>
+                <p className="subtle">
+                  Visning:{" "}
+                  {aggYearRange.length > 0
+                    ? `${aggYearRange[0]}-${aggYearRange[aggYearRange.length - 1]}`
+                    : "ingen år i valgt intervall"}
+                </p>
+              </div>
+            ) : null}
             {chartSeries.length === 0 ? (
               <p className="subtle">Ingen aggregert kurve ennå.</p>
             ) : (
@@ -1048,7 +1188,7 @@ function App() {
                       );
                     })}
                     {xAxisTicks.map((tick) => {
-                      const x = 40 + (880 * tick.index) / Math.max(fullYearRange.length - 1, 1);
+                      const x = 40 + (880 * tick.index) / Math.max(aggYearRange.length - 1, 1);
                       return (
                         <g key={`x-${tick.year}`}>
                           <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
@@ -1070,9 +1210,9 @@ function App() {
                         <polyline
                           key={series.group}
                           fill="none"
-                          stroke={useBw ? "#111827" : series.color}
+                          stroke={aggUseBw ? "#111827" : series.color}
                           strokeWidth="2.5"
-                          strokeDasharray={useDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
+                          strokeDasharray={aggUseDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
                           points={polyline}
                         />
                       );
@@ -1094,7 +1234,7 @@ function App() {
                       }
                       title="Klikk for å slå kurve av/på"
                     >
-                      <i style={{ backgroundColor: useBw ? "#111827" : series.color }} /> {series.group}
+                      <i style={{ backgroundColor: aggUseBw ? "#111827" : series.color }} /> {series.group}
                     </button>
                   ))}
                 </div>

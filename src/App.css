@@ -121,6 +121,20 @@ button:disabled {
   margin-bottom: 0.55rem;
 }
 
+.chip-btn {
+  background: #e2e8f0;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
+.plot-popover {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+
 .btn-run-agg {
   background: #0f766e;
 }
