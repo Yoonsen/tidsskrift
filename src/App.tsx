@@ -157,28 +157,23 @@ function App() {
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
-        const byId = new Map<number, CorpusEntry>();
+        const parsed = result.data
+          .map((row) => {
+            const rawId = row.dhlabid ?? row.id;
+            const id = Number(rawId);
+            if (!Number.isFinite(id)) return null;
 
-        for (const row of result.data) {
-          const rawId = row.dhlabid ?? row.id;
-          const id = Number(rawId);
-          if (!Number.isFinite(id)) continue;
+            const urn = (row.urn ?? "").trim();
+            if (!urn) return null;
 
-          const urn = (row.urn ?? "").trim();
-          if (!urn) continue;
+            const year = parseYear(row.year);
+            const link = (row.nettbiblioteket ?? "").trim();
+            const title = (row.title ?? "").trim();
 
-          const year = parseYear(row.year);
-          const link = (row.nettbiblioteket ?? "").trim();
-          const title = (row.title ?? "").trim();
-
-          if (!byId.has(id)) {
-            byId.set(id, { id, urn, title, year, link });
-          }
-        }
-
-        const parsed = Array.from(byId.values()).sort(
-          (a, b) => (a.year ?? 9999) - (b.year ?? 9999)
-        );
+            return { id, urn, title, year, link } as CorpusEntry;
+          })
+          .filter((entry): entry is CorpusEntry => !!entry)
+          .sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999));
 
         setCorpus(parsed);
         setStatus(`Korpus lastet: ${parsed.length} dokumenter.`);
