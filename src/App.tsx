@@ -5,6 +5,7 @@ import corpusCsvUrl from "../Nylænde.csv?url";
 type CorpusEntry = {
   id: number;
   urn: string;
+  sesamid: string;
   title: string;
   year: number | null;
   link: string;
@@ -17,10 +18,14 @@ type ConcordanceRow = {
   urn?: string;
 };
 
-type ConcTableResponse = {
-  docid?: Record<string, number | string>;
-  urn?: Record<string, string>;
-  conc?: Record<string, string>;
+type NbContentSearchHit = {
+  before?: string;
+  match?: string;
+  after?: string;
+};
+
+type NbContentSearchResponse = {
+  hits?: NbContentSearchHit[];
 };
 
 type GroupEditorRow = {
@@ -40,11 +45,9 @@ type ChartStyleMode = "color" | "bw" | "bw-dashed";
 
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
-const FTS_WINDOW = 25;
-const FTS_LIMIT = 2000;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
 const DASH_PATTERNS = ["0", "8 4", "2 3", "10 3 2 3", "12 4", "3 3"];
-const API_BASE = "https://api.nb.no/dhlab";
+const NB_CONTENTSEARCH_API_BASE = "https://api.nb.no/catalog/v1/contentsearch";
 
 function parseYear(rawYear: string | undefined): number | null {
   if (!rawYear) return null;
@@ -128,6 +131,29 @@ function renderConcordanceHtml(fragment: string): { __html: string } {
   return { __html: fragment };
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildSearchTargetId(entry: CorpusEntry): string {
+  if (entry.sesamid) return entry.sesamid;
+  if (entry.urn) return entry.urn;
+  return String(entry.id);
+}
+
+function buildNbHitFragment(hit: NbContentSearchHit): string {
+  const before = escapeHtml(hit.before ?? "");
+  const match = escapeHtml(hit.match ?? "");
+  const after = escapeHtml(hit.after ?? "");
+  if (match.length === 0) return `${before}${after}`;
+  return `${before}<b>${match}</b>${after}`;
+}
+
 function smoothPoints(points: Array<{ year: number; value: number }>, windowSize: number) {
   if (windowSize <= 1 || points.length <= 1) return points;
 
@@ -151,6 +177,16 @@ function buildYearRange(startYear: number, endYear: number): number[] {
     years.push(year);
   }
   return years;
+}
+
+function buildFiveYearTicks(yearRange: number[]): Array<{ index: number; year: number }> {
+  const ticks: Array<{ index: number; year: number }> = [];
+  yearRange.forEach((year, index) => {
+    if (year % 5 === 0) {
+      ticks.push({ index, year });
+    }
+  });
+  return ticks;
 }
 
 function App() {
@@ -204,13 +240,13 @@ function App() {
             if (!Number.isFinite(id)) return null;
 
             const urn = (row.urn ?? "").trim();
-            if (!urn) return null;
-
+            const sesamid = (row.sesamid ?? "").trim();
+            if (!urn && !sesamid) return null;
             const year = parseYear(row.year);
             const link = (row.nettbiblioteket ?? "").trim();
             const title = (row.title ?? "").trim();
 
-            return { id, urn, title, year, link } as CorpusEntry;
+            return { id, urn, sesamid, title, year, link } as CorpusEntry;
           })
           .filter((entry): entry is CorpusEntry => !!entry)
           .sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999));
@@ -249,46 +285,43 @@ function App() {
     searchQuery: string,
     filteredEntries: CorpusEntry[]
   ): Promise<ConcordanceRow[]> {
-    const dhlabids = filteredEntries.map((entry) => entry.id);
-    const payload = {
-      query: searchQuery,
-      html_formatting: true,
-      trigram_index: false,
-      window: FTS_WINDOW,
-      limit: FTS_LIMIT,
-      dhlabids
-    };
+    const rowsPerEntry = await Promise.all(
+      filteredEntries.map(async (entry) => {
+        const targetId = buildSearchTargetId(entry);
+        if (!targetId) return [] as ConcordanceRow[];
 
-    const response = await fetch(`${API_BASE}/conc`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+        const endpoint = `${NB_CONTENTSEARCH_API_BASE}/${encodeURIComponent(targetId)}/search?q=${encodeURIComponent(searchQuery)}`;
+        const response = await fetch(endpoint, { method: "GET", credentials: "include" });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(`HTTP ${response.status} (${targetId}): ${message}`);
+        }
 
-    if (!response.ok) {
-      const message = await response.text();
-      throw new Error(`HTTP ${response.status}: ${message}`);
-    }
+        const data: NbContentSearchResponse = await response.json();
+        const hits = data.hits ?? [];
 
-    const data: ConcTableResponse = await response.json();
-    const docid = data.docid ?? {};
-    const conc = data.conc ?? {};
-    const urn = data.urn ?? {};
-    const indices = Object.keys(conc);
-
-    return indices
-      .map((idx, pos) => {
-        const id = Number(docid[idx]);
-        const frag = String(conc[idx] ?? "");
-        if (!Number.isFinite(id) || !frag) return null;
-        return {
-          bookId: id,
-          pos,
-          frag,
-          urn: urn[idx]
-        } as ConcordanceRow;
+        return hits
+          .map((hit, index) => {
+            const frag = buildNbHitFragment(hit);
+            if (!frag) return null;
+            return {
+              bookId: entry.id,
+              pos: index,
+              frag,
+              urn: entry.urn || undefined
+            } as ConcordanceRow;
+          })
+          .filter((row): row is ConcordanceRow => !!row);
       })
-      .filter((row): row is ConcordanceRow => !!row);
+    );
+
+    const mergedRows: ConcordanceRow[] = [];
+    rowsPerEntry.forEach((entryRows) => {
+      entryRows.forEach((row) => {
+        mergedRows.push(row);
+      });
+    });
+    return mergedRows.map((row, index) => ({ ...row, pos: index }));
   }
 
   async function searchConcordance() {
@@ -304,7 +337,7 @@ function App() {
 
     setIsLoading(true);
     setRows([]);
-    setStatus("Søker i konkordans...");
+    setStatus("Søker i Nettbiblioteket ...");
 
     try {
       const resultRows = await fetchConcordanceRowsForQuery(trimmedQuery, filteredCorpus);
@@ -362,10 +395,15 @@ function App() {
       for (let i = 0; i < cleanGroups.length; i += 1) {
         const group = cleanGroups[i];
         setAggProgress({ done: i, total: cleanGroups.length, currentGroup: group.group });
-        const queryExpr = group.variants
-          .map((variant) => `"${variant.replace(/"/g, '""')}"`)
-          .join(" OR ");
-        const groupRowsRaw = await fetchConcordanceRowsForQuery(queryExpr, filteredCorpus);
+        const hitsPerVariant = await Promise.all(
+          group.variants.map((variant) => fetchConcordanceRowsForQuery(variant, filteredCorpus))
+        );
+        const groupRowsRaw: ConcordanceRow[] = [];
+        hitsPerVariant.forEach((variantRows) => {
+          variantRows.forEach((row) => {
+            groupRowsRaw.push(row);
+          });
+        });
 
         // Deduplicate identical hits so one paragraph match is counted once per group.
         const uniqueHits = Array.from(
@@ -619,7 +657,10 @@ function App() {
   }, [countsByYear, corpusYearBounds]);
 
   const aggYearBounds = useMemo(() => {
-    const years = groupResults.flatMap((group) => group.byYear.map(([year]) => year));
+    const years: number[] = [];
+    groupResults.forEach((group) => {
+      group.byYear.forEach(([year]) => years.push(year));
+    });
     if (years.length === 0) return corpusYearBounds;
     return { min: Math.min(...years), max: Math.max(...years) };
   }, [groupResults, corpusYearBounds]);
@@ -673,15 +714,7 @@ function App() {
   }, [concSeriesPoints]);
 
   const concXAxisTicks = useMemo(() => {
-    if (concYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
-    const desiredTickCount = 4;
-    const step = Math.max(1, Math.floor((concYearRange.length - 1) / desiredTickCount));
-    const indices: number[] = [];
-    for (let i = 0; i < concYearRange.length; i += step) indices.push(i);
-    if (indices[indices.length - 1] !== concYearRange.length - 1) {
-      indices.push(concYearRange.length - 1);
-    }
-    return indices.map((index) => ({ index, year: concYearRange[index] }));
+    return buildFiveYearTicks(concYearRange);
   }, [concYearRange]);
 
   const chartSeries = useMemo(
@@ -720,15 +753,7 @@ function App() {
   }, [visibleChartSeries]);
 
   const xAxisTicks = useMemo(() => {
-    if (aggYearRange.length === 0) return [] as Array<{ index: number; year: number }>;
-    const desiredTickCount = 6;
-    const step = Math.max(1, Math.floor((aggYearRange.length - 1) / desiredTickCount));
-    const indices: number[] = [];
-    for (let i = 0; i < aggYearRange.length; i += step) indices.push(i);
-    if (indices[indices.length - 1] !== aggYearRange.length - 1) {
-      indices.push(aggYearRange.length - 1);
-    }
-    return indices.map((index) => ({ index, year: aggYearRange[index] }));
+    return buildFiveYearTicks(aggYearRange);
   }, [aggYearRange]);
 
   const aggProgressPercent =
@@ -743,7 +768,7 @@ function App() {
     <main className="page">
       <h1>Nylænde - konkordanser</h1>
       <p className="subtle">
-        Kilde: DH-lab concordance + korpus fra <code>Nylænde.csv</code>.
+        Kilde: NB contentsearch + korpus fra <code>Nylænde.csv</code>.
       </p>
 
       <section className="controls">
@@ -768,7 +793,7 @@ function App() {
         </div>
         <div className="grid">
           <div className="subtle">
-            FTS5-parametre: <code>window={FTS_WINDOW}</code>, <code>limit={FTS_LIMIT}</code>
+            Backend: <code>api.nb.no/catalog/v1/contentsearch</code> med <code>sesamid</code> / <code>urn</code>.
           </div>
         </div>
         <p className="subtle">Dokumenter i valgt årsområde: {filteredCorpus.length}</p>
@@ -809,8 +834,7 @@ function App() {
               />
             </label>
             <p className="subtle">
-              Søketips (FTS5): enkeltord <code>amerika</code>, frase{" "}
-              <code>"de forenede stater"</code>, nærhet <code>NEAR(amerika england, 5)</code>.
+              Søketips: prøv frase med anførselstegn, f.eks. <code>"de forenede stater"</code>.
             </p>
             <button onClick={() => void searchConcordance()} disabled={isLoading}>
               {isLoading ? "Søker …" : "Kjør konkordans"}
@@ -951,6 +975,14 @@ function App() {
                       })
                       .join(" ")}
                   />
+                  {concSeriesPoints.length === 1 ? (
+                    <circle
+                      cx={40}
+                      cy={140 - (120 * concSeriesPoints[0].value) / concMaxValue}
+                      r="4"
+                      fill={concUseBw ? "#111827" : "#1d4ed8"}
+                    />
+                  ) : null}
                 </svg>
               </div>
             )}
@@ -967,7 +999,7 @@ function App() {
                 const resolvedUrn = row.urn || meta?.urn || "";
                 const link = resolvedUrn
                   ? `https://www.nb.no/items/${resolvedUrn}?searchText=${encodeURIComponent(query.trim())}`
-                  : "";
+                  : meta?.link || "";
                 return (
                   <article key={`${row.bookId}-${row.pos}-${index}`} className="hit">
                     <p dangerouslySetInnerHTML={renderConcordanceHtml(row.frag)} />
@@ -1166,77 +1198,99 @@ function App() {
               <p className="subtle">Ingen aggregert kurve ennå.</p>
             ) : (
               <>
-                <div className="chart-resizable">
-                  <svg
-                    ref={aggChartRef}
-                    viewBox="0 0 960 300"
-                    preserveAspectRatio="none"
-                    className="chart"
-                  >
-                    <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
-                    <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
-                    {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-                      const y = 260 - 240 * ratio;
-                      const value = Math.round(maxChartValue * ratio);
-                      return (
-                        <g key={`y-${ratio}`}>
-                          <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
-                          <text x="34" y={y + 4} textAnchor="end" className="axis-text">
-                            {value}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    {xAxisTicks.map((tick) => {
-                      const x = 40 + (880 * tick.index) / Math.max(aggYearRange.length - 1, 1);
-                      return (
-                        <g key={`x-${tick.year}`}>
-                          <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
-                          <text x={x} y="278" textAnchor="middle" className="axis-text">
-                            {tick.year}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    {visibleChartSeries.map((series, seriesIndex) => {
-                      const polyline = series.points
-                        .map((point, pointIndex) => {
-                          const x = 40 + (880 * pointIndex) / Math.max(series.points.length - 1, 1);
-                          const y = 260 - (240 * point.value) / maxChartValue;
-                          return `${x},${y}`;
-                        })
-                        .join(" ");
-                      return (
-                        <polyline
-                          key={series.group}
-                          fill="none"
-                          stroke={aggUseBw ? "#111827" : series.color}
-                          strokeWidth="2.5"
-                          strokeDasharray={aggUseDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
-                          points={polyline}
-                        />
-                      );
-                    })}
-                  </svg>
-                </div>
-                <div className="legend">
-                  {chartSeries.map((series) => (
-                    <button
-                      key={series.group}
-                      type="button"
-                      className={hiddenGroups.includes(series.group) ? "legend-toggle off" : "legend-toggle"}
-                      onClick={() =>
-                        setHiddenGroups((current) =>
-                          current.includes(series.group)
-                            ? current.filter((name) => name !== series.group)
-                            : [...current, series.group]
-                        )
-                      }
-                      title="Klikk for å slå kurve av/på"
+                <div className="chart-and-legend">
+                  <div className="chart-resizable">
+                    <svg
+                      ref={aggChartRef}
+                      viewBox="0 0 960 300"
+                      preserveAspectRatio="none"
+                      className="chart"
                     >
-                      <i style={{ backgroundColor: aggUseBw ? "#111827" : series.color }} /> {series.group}
-                    </button>
-                  ))}
+                      <line x1="40" y1="260" x2="920" y2="260" stroke="#cbd5e1" />
+                      <line x1="40" y1="20" x2="40" y2="260" stroke="#cbd5e1" />
+                      {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                        const y = 260 - 240 * ratio;
+                        const value = Math.round(maxChartValue * ratio);
+                        return (
+                          <g key={`y-${ratio}`}>
+                            <line x1="40" y1={y} x2="920" y2={y} stroke="#f1f5f9" />
+                            <text x="34" y={y + 4} textAnchor="end" className="axis-text">
+                              {value}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {xAxisTicks.map((tick) => {
+                        const x = 40 + (880 * tick.index) / Math.max(aggYearRange.length - 1, 1);
+                        return (
+                          <g key={`x-${tick.year}`}>
+                            <line x1={x} y1="260" x2={x} y2="264" stroke="#94a3b8" />
+                            <text x={x} y="278" textAnchor="middle" className="axis-text">
+                              {tick.year}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {visibleChartSeries.map((series, seriesIndex) => {
+                        const polyline = series.points
+                          .map((point, pointIndex) => {
+                            const x = 40 + (880 * pointIndex) / Math.max(series.points.length - 1, 1);
+                            const y = 260 - (240 * point.value) / maxChartValue;
+                            return `${x},${y}`;
+                          })
+                          .join(" ");
+                        return (
+                          <g key={series.group}>
+                            <polyline
+                              fill="none"
+                              stroke={aggUseBw ? "#111827" : series.color}
+                              strokeWidth="2.5"
+                              strokeDasharray={aggUseDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
+                              points={polyline}
+                            />
+                            {series.points.length === 1 ? (
+                              <circle
+                                cx={40}
+                                cy={260 - (240 * series.points[0].value) / maxChartValue}
+                                r="4"
+                                fill={aggUseBw ? "#111827" : series.color}
+                              />
+                            ) : null}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                  <div className="legend legend-right">
+                    {chartSeries.map((series, seriesIndex) => (
+                      <button
+                        key={series.group}
+                        type="button"
+                        className={hiddenGroups.includes(series.group) ? "legend-toggle off" : "legend-toggle"}
+                        onClick={() =>
+                          setHiddenGroups((current) =>
+                            current.includes(series.group)
+                              ? current.filter((name) => name !== series.group)
+                              : [...current, series.group]
+                          )
+                        }
+                        title="Klikk for å slå kurve av/på"
+                      >
+                        <svg className="legend-line-swatch" viewBox="0 0 28 12" aria-hidden="true">
+                          <line
+                            x1="1"
+                            y1="6"
+                            x2="27"
+                            y2="6"
+                            stroke={aggUseBw ? "#111827" : series.color}
+                            strokeWidth="3"
+                            strokeDasharray={aggUseDashed ? DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length] : undefined}
+                          />
+                        </svg>{" "}
+                        {series.group}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
