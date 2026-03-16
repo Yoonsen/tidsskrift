@@ -42,6 +42,7 @@ type GroupResult = {
 };
 
 type ChartStyleMode = "color" | "bw" | "bw-dashed";
+type SerializedFigure = { svgText: string; width: number; height: number };
 
 const DEFAULT_MIN_YEAR = 1887;
 const DEFAULT_MAX_YEAR = 1920;
@@ -487,6 +488,52 @@ function App() {
     downloadFile(filename, serializeSvg(svg), "image/svg+xml;charset=utf-8");
   }
 
+  async function downloadPngFromSerializedFigure(
+    figure: SerializedFigure,
+    filename: string
+  ) {
+    const svgBlob = new Blob([figure.svgText], { type: "image/svg+xml;charset=utf-8" });
+    const svgUrl = URL.createObjectURL(svgBlob);
+
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Kunne ikke lese SVG for PNG-eksport."));
+        img.src = svgUrl;
+      });
+
+      const scale300Dpi = 300 / 96;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(figure.width * scale300Dpi));
+      canvas.height = Math.max(1, Math.round(figure.height * scale300Dpi));
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Kunne ikke opprette canvas-kontekst.");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+      const pngBlob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Kunne ikke lage PNG-fil."));
+        }, "image/png");
+      });
+
+      const pngUrl = URL.createObjectURL(pngBlob);
+      const link = document.createElement("a");
+      link.href = pngUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(pngUrl);
+    } finally {
+      URL.revokeObjectURL(svgUrl);
+    }
+  }
+
   async function downloadPngFigure(svg: SVGSVGElement, filename: string) {
     const svgText = serializeSvg(svg);
     const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
@@ -532,6 +579,108 @@ function App() {
     }
   }
 
+  function buildAggregatedFigureWithLegendSvg(): SerializedFigure | null {
+    if (!aggChartRef.current) return null;
+
+    const chartSvg = aggChartRef.current.cloneNode(true) as SVGSVGElement;
+    chartSvg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    chartSvg.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+
+    const { width: chartWidth, height: chartHeight } = getSvgSize(aggChartRef.current);
+    const legendWidth = 280;
+    const legendGap = 24;
+    const legendPadding = 12;
+    const itemRowHeight = 22;
+    const legendHeaderHeight = 26;
+    const legendHeight = Math.max(
+      90,
+      legendPadding * 2 + legendHeaderHeight + chartSeries.length * itemRowHeight
+    );
+    const totalWidth = Math.round(chartWidth + legendGap + legendWidth);
+    const totalHeight = Math.round(Math.max(chartHeight, legendHeight));
+    const legendX = chartWidth + legendGap;
+    const ns = "http://www.w3.org/2000/svg";
+
+    const root = document.createElementNS(ns, "svg");
+    root.setAttribute("xmlns", ns);
+    root.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+    root.setAttribute("viewBox", `0 0 ${totalWidth} ${totalHeight}`);
+    root.setAttribute("width", String(totalWidth));
+    root.setAttribute("height", String(totalHeight));
+
+    const bg = document.createElementNS(ns, "rect");
+    bg.setAttribute("x", "0");
+    bg.setAttribute("y", "0");
+    bg.setAttribute("width", String(totalWidth));
+    bg.setAttribute("height", String(totalHeight));
+    bg.setAttribute("fill", "#ffffff");
+    root.appendChild(bg);
+
+    chartSvg.setAttribute("width", String(chartWidth));
+    chartSvg.setAttribute("height", String(chartHeight));
+    chartSvg.setAttribute("x", "0");
+    chartSvg.setAttribute("y", "0");
+    root.appendChild(chartSvg);
+
+    const legendBox = document.createElementNS(ns, "rect");
+    legendBox.setAttribute("x", String(legendX));
+    legendBox.setAttribute("y", "0");
+    legendBox.setAttribute("width", String(legendWidth));
+    legendBox.setAttribute("height", String(totalHeight));
+    legendBox.setAttribute("fill", "#f8fafc");
+    legendBox.setAttribute("stroke", "#e2e8f0");
+    legendBox.setAttribute("rx", "8");
+    legendBox.setAttribute("ry", "8");
+    root.appendChild(legendBox);
+
+    const legendTitle = document.createElementNS(ns, "text");
+    legendTitle.setAttribute("x", String(legendX + legendPadding));
+    legendTitle.setAttribute("y", String(legendPadding + 12));
+    legendTitle.setAttribute("fill", "#334155");
+    legendTitle.setAttribute("font-size", "12");
+    legendTitle.setAttribute("font-weight", "700");
+    legendTitle.textContent = "Legend";
+    root.appendChild(legendTitle);
+
+    chartSeries.forEach((series, seriesIndex) => {
+      const isHidden = hiddenGroups.includes(series.group);
+      const rowY =
+        legendPadding + legendHeaderHeight + seriesIndex * itemRowHeight + itemRowHeight / 2;
+      const line = document.createElementNS(ns, "line");
+      line.setAttribute("x1", String(legendX + legendPadding));
+      line.setAttribute("x2", String(legendX + legendPadding + 40));
+      line.setAttribute("y1", String(rowY));
+      line.setAttribute("y2", String(rowY));
+      line.setAttribute("stroke", aggUseBw ? "#111827" : series.color);
+      line.setAttribute("stroke-width", "2.5");
+      if (aggUseDashed) {
+        line.setAttribute(
+          "stroke-dasharray",
+          DASH_PATTERNS[seriesIndex % DASH_PATTERNS.length]
+        );
+      }
+      if (isHidden) line.setAttribute("opacity", "0.35");
+      root.appendChild(line);
+
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", String(legendX + legendPadding + 48));
+      label.setAttribute("y", String(rowY + 4));
+      label.setAttribute("fill", isHidden ? "#94a3b8" : "#334155");
+      label.setAttribute("font-size", "12");
+      if (isHidden) {
+        label.setAttribute("text-decoration", "line-through");
+      }
+      label.textContent = series.group;
+      root.appendChild(label);
+    });
+
+    return {
+      svgText: new XMLSerializer().serializeToString(root),
+      width: totalWidth,
+      height: totalHeight
+    };
+  }
+
   function handleDownloadConcSvg() {
     if (!concChartRef.current) {
       setStatus("Fant ikke konkordansfigur for nedlasting.");
@@ -556,22 +705,24 @@ function App() {
   }
 
   function handleDownloadAggSvg() {
-    if (!aggChartRef.current) {
+    const figure = buildAggregatedFigureWithLegendSvg();
+    if (!figure) {
       setGroupStatus("Fant ikke aggregert figur for nedlasting.");
       return;
     }
-    downloadSvgFigure(aggChartRef.current, "aggregert-kurve.svg");
-    setGroupStatus("Aggregert figur lastet ned (SVG).");
+    downloadFile("aggregert-kurve-med-legend.svg", figure.svgText, "image/svg+xml;charset=utf-8");
+    setGroupStatus("Aggregert figur med legend lastet ned (SVG).");
   }
 
   async function handleDownloadAggPng() {
-    if (!aggChartRef.current) {
+    const figure = buildAggregatedFigureWithLegendSvg();
+    if (!figure) {
       setGroupStatus("Fant ikke aggregert figur for nedlasting.");
       return;
     }
     try {
-      await downloadPngFigure(aggChartRef.current, "aggregert-kurve-300dpi.png");
-      setGroupStatus("Aggregert figur lastet ned (PNG 300 dpi).");
+      await downloadPngFromSerializedFigure(figure, "aggregert-kurve-med-legend-300dpi.png");
+      setGroupStatus("Aggregert figur med legend lastet ned (PNG 300 dpi).");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Ukjent feil";
       setGroupStatus(`Nedlasting feilet: ${message}`);
