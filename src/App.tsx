@@ -49,6 +49,7 @@ const DEFAULT_MAX_YEAR = 1920;
 const LINE_COLORS = ["#1d4ed8", "#047857", "#be185d", "#b45309", "#4338ca", "#0369a1"];
 const DASH_PATTERNS = ["0", "8 4", "2 3", "10 3 2 3", "12 4", "3 3"];
 const NB_CONTENTSEARCH_API_BASE = "https://api.nb.no/catalog/v1/contentsearch";
+const EXPORTED_LEGEND_TITLE = "";
 
 function parseYear(rawYear: string | undefined): number | null {
   if (!rawYear) return null;
@@ -627,7 +628,7 @@ function App() {
     legendBox.setAttribute("y", "0");
     legendBox.setAttribute("width", String(legendWidth));
     legendBox.setAttribute("height", String(totalHeight));
-    legendBox.setAttribute("fill", "#f8fafc");
+    legendBox.setAttribute("fill", "#ffffff");
     legendBox.setAttribute("stroke", "#e2e8f0");
     legendBox.setAttribute("rx", "8");
     legendBox.setAttribute("ry", "8");
@@ -639,7 +640,7 @@ function App() {
     legendTitle.setAttribute("fill", "#334155");
     legendTitle.setAttribute("font-size", "12");
     legendTitle.setAttribute("font-weight", "700");
-    legendTitle.textContent = "Legend";
+    legendTitle.textContent = EXPORTED_LEGEND_TITLE;
     root.appendChild(legendTitle);
 
     chartSeries.forEach((series, seriesIndex) => {
