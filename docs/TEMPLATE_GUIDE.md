@@ -20,12 +20,14 @@ Bruk denne appen som base når du lager en ny korpusbasert miniapp.
 
 CSV må minst ha disse feltene:
 
-- `dhlabid`
-- `urn`
+- `urn` eller `sesamid` (helst begge)
 - `year`
 - `title`
 
-Andre felter kan være med, men brukes ikke av kjernen.
+Anbefalte felter utover minimum:
+
+- `nettbiblioteket` (for stabile lenker i UI)
+- `dhlabid` eller annen numerisk ID (intern nøkkel i appen)
 
 ### Gruppeformat (forsker-vennlig)
 
@@ -57,12 +59,12 @@ Støttet JSON-format:
 
 - Default årsintervall
 - Gruppeforslag
-- FTS5 søkehints i UI
+- Sokehints i UI
 - Små språkjusteringer i labels
 
 ### Hva som normalt ikke røres
 
-- `/dhlab/conc` kallestruktur
-- Join mellom `docid` og `dhlabid`
+- NB contentsearch-kall per dokument (`sesamid`/`urn`)
+- Join mellom treff og lokal metadata-ID
 - Eksport/import-flyt
 - Deploy-workflow
